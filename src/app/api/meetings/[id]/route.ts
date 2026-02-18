@@ -53,7 +53,8 @@ export async function PATCH(
     });
 
     const updated = getMeeting(meetingId);
-    return NextResponse.json(updated);
+    const updatedAgenda = getAgendaItemsForMeeting(updated!.meeting_date);
+    return NextResponse.json({ ...updated, agenda_items: updatedAgenda });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: message }, { status: 500 });

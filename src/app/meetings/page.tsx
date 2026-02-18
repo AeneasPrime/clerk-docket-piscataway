@@ -620,7 +620,9 @@ function MeetingDetail({ meetingId, onBack }: {
     setLoading(true);
     try {
       const res = await fetch(`/api/meetings/${meetingId}`);
+      if (!res.ok) throw new Error(`API error ${res.status}`);
       const data = await res.json();
+      if (!data.agenda_items) data.agenda_items = [];
       setMeeting(data);
       setVideoInput(data.video_url ?? "");
     } catch { /* ignore */ }
@@ -1041,7 +1043,7 @@ function MeetingDetail({ meetingId, onBack }: {
               </svg>
               <h2 className="text-sm font-semibold" style={{ color: "#1D2024" }}>Agenda</h2>
             </div>
-            {(meeting.agenda_url || meeting.agenda_items.length > 0) && (
+            {(meeting.agenda_url || (meeting.agenda_items?.length ?? 0) > 0) && (
               <a
                 href={meeting.agenda_url ?? `/api/meetings/${meeting.id}/agenda-pdf`}
                 download
@@ -1066,7 +1068,7 @@ function MeetingDetail({ meetingId, onBack }: {
                 title="Meeting Agenda PDF"
               />
             </div>
-          ) : meeting.agenda_items.length === 0 ? (
+          ) : (meeting.agenda_items?.length ?? 0) === 0 ? (
             <p className="mt-3 text-xs" style={{ color: "#C8C9CC" }}>
               No agenda items assigned to this meeting yet.
               <br />
