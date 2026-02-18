@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureMeetingsGenerated } from "@/lib/db";
+import { ensureMeetingsGenerated, ensureSeeded } from "@/lib/db";
 import { syncVideosFromYouTube } from "@/lib/video-sync";
 import { checkPendingMinutesGeneration } from "@/lib/minutes-generator";
 
@@ -22,6 +22,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    ensureSeeded();
     ensureMeetingsGenerated();
 
     const syncResult = await syncVideosFromYouTube();

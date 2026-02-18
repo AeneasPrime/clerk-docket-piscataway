@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureMeetingsGenerated, getMeetings } from "@/lib/db";
+import { ensureMeetingsGenerated, ensureSeeded, getMeetings } from "@/lib/db";
 import { syncVideosFromYouTube } from "@/lib/video-sync";
 import { checkPendingMinutesGeneration } from "@/lib/minutes-generator";
 
 export async function GET(request: NextRequest) {
   try {
+    ensureSeeded();
     ensureMeetingsGenerated();
 
     // Auto-sync videos from YouTube (Piscataway Community TV)

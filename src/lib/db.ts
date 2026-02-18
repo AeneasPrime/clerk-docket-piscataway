@@ -147,8 +147,13 @@ const PISCATAWAY_2026_SCHEDULE: { date: string; time: string; type: "council" | 
   { date: "2026-12-15", time: "7:00 PM", type: "council" },
 ];
 
-// --- Seed demo data on first run ---
-seedDemoData();
+// --- Seed demo data (runs lazily on first API call, not during build) ---
+let _seeded = false;
+export function ensureSeeded(): void {
+  if (_seeded) return;
+  _seeded = true;
+  seedDemoData();
+}
 
 // --- Config ---
 
