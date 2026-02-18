@@ -1,4 +1,4 @@
-// Seed data placeholder — customize for Piscataway Township
+import { FEB10_MINUTES } from "./seed-minutes-feb10";
 
 export const SEED_ORDINANCE_TRACKING: {
   email_id: string;
@@ -18,4 +18,11 @@ export const SEED_MINUTES: {
   meeting_date: string;
   video_url: string;
   minutes: string;
-}[] = [];
+}[] = [
+  {
+    meeting_type: "council",
+    meeting_date: "2026-02-10",
+    video_url: "https://www.youtube.com/watch?v=dGFMOGPMHIc",
+    minutes: FEB10_MINUTES,
+  },
+];

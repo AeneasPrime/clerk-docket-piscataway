@@ -707,9 +707,18 @@ function seedDemoData() {
   const seeded = db.prepare("SELECT value FROM config WHERE key = 'seed_v1'").get() as { value: string } | undefined;
   if (seeded) return;
 
-  // No seed data — Piscataway instance starts clean. Docket entries come from email scanning.
   db.prepare("INSERT INTO config (key, value) VALUES ('seed_v1', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
-  console.log("[seed] Piscataway instance initialized (no demo data)");
+
+  // Seed pre-generated minutes (Feb 10 council meeting)
+  for (const m of SEED_MINUTES) {
+    const meeting = db.prepare("SELECT id, minutes FROM meetings WHERE meeting_date = ? AND meeting_type = ?").get(m.meeting_date, m.meeting_type) as { id: number; minutes: string } | undefined;
+    if (meeting && !meeting.minutes) {
+      db.prepare("UPDATE meetings SET minutes = ?, video_url = ?, status = 'completed' WHERE id = ?").run(m.minutes, m.video_url, meeting.id);
+      console.log(`[seed] Seeded minutes for ${m.meeting_date} ${m.meeting_type}`);
+    }
+  }
+
+  console.log("[seed] Piscataway instance initialized");
 }
 
 /* Original seed data removed — Piscataway instance starts clean */
