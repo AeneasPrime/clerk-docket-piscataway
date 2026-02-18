@@ -703,22 +703,25 @@ export function getAllOrdinancesWithTracking(): (DocketEntry & { tracking: Ordin
 // --- Seed demo data ---
 
 function seedDemoData() {
-  // Only run once — check config flag
-  const seeded = db.prepare("SELECT value FROM config WHERE key = 'seed_v1'").get() as { value: string } | undefined;
-  if (seeded) return;
-
-  db.prepare("INSERT INTO config (key, value) VALUES ('seed_v1', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
-
-  // Seed pre-generated minutes (Feb 10 council meeting)
-  for (const m of SEED_MINUTES) {
-    const meeting = db.prepare("SELECT id, minutes FROM meetings WHERE meeting_date = ? AND meeting_type = ?").get(m.meeting_date, m.meeting_type) as { id: number; minutes: string } | undefined;
-    if (meeting && !meeting.minutes) {
-      db.prepare("UPDATE meetings SET minutes = ?, video_url = ?, status = 'completed' WHERE id = ?").run(m.minutes, m.video_url, meeting.id);
-      console.log(`[seed] Seeded minutes for ${m.meeting_date} ${m.meeting_type}`);
+  // Seed minutes for demo meetings (idempotent — only updates meetings with no minutes)
+  const seededMinutes = db.prepare("SELECT value FROM config WHERE key = 'seed_minutes_v2'").get() as { value: string } | undefined;
+  if (!seededMinutes) {
+    db.prepare("INSERT INTO config (key, value) VALUES ('seed_minutes_v2', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+    for (const m of SEED_MINUTES) {
+      const meeting = db.prepare("SELECT id, minutes FROM meetings WHERE meeting_date = ? AND meeting_type = ?").get(m.meeting_date, m.meeting_type) as { id: number; minutes: string } | undefined;
+      if (meeting && !meeting.minutes) {
+        db.prepare("UPDATE meetings SET minutes = ?, video_url = ?, status = 'completed' WHERE id = ?").run(m.minutes, m.video_url, meeting.id);
+        console.log(`[seed] Seeded minutes for ${m.meeting_date} ${m.meeting_type}`);
+      }
     }
   }
 
-  console.log("[seed] Piscataway instance initialized");
+  // Mark general seed as done
+  const seeded = db.prepare("SELECT value FROM config WHERE key = 'seed_v1'").get() as { value: string } | undefined;
+  if (!seeded) {
+    db.prepare("INSERT INTO config (key, value) VALUES ('seed_v1', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+    console.log("[seed] Piscataway instance initialized");
+  }
 }
 
 /* Original seed data removed — Piscataway instance starts clean */
