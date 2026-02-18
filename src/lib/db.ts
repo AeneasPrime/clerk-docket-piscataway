@@ -703,10 +703,13 @@ export function getAllOrdinancesWithTracking(): (DocketEntry & { tracking: Ordin
 // --- Seed demo data ---
 
 function seedDemoData() {
+  // Ensure meeting rows exist before seeding minutes into them
+  ensureMeetingsGenerated();
+
   // Seed minutes for demo meetings (idempotent — only updates meetings with no minutes)
-  const seededMinutes = db.prepare("SELECT value FROM config WHERE key = 'seed_minutes_v2'").get() as { value: string } | undefined;
+  const seededMinutes = db.prepare("SELECT value FROM config WHERE key = 'seed_minutes_v3'").get() as { value: string } | undefined;
   if (!seededMinutes) {
-    db.prepare("INSERT INTO config (key, value) VALUES ('seed_minutes_v2', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+    db.prepare("INSERT INTO config (key, value) VALUES ('seed_minutes_v3', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
     for (const m of SEED_MINUTES) {
       const meeting = db.prepare("SELECT id, minutes FROM meetings WHERE meeting_date = ? AND meeting_type = ?").get(m.meeting_date, m.meeting_type) as { id: number; minutes: string } | undefined;
       if (meeting && !meeting.minutes) {
