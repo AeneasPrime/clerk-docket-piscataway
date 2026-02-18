@@ -26,7 +26,7 @@ export async function GET(
     const hasReviewMarkers = /\[REVIEW:[^\]]*\]/.test(meeting.minutes);
     const doc = generateMinutesPDF({
       meetingDate: meeting.meeting_date,
-      meetingType: meeting.meeting_type as "work_session" | "regular",
+      meetingType: meeting.meeting_type as "council" | "reorganization",
       minutes: meeting.minutes,
       isDraft: hasReviewMarkers,
     });
@@ -40,7 +40,7 @@ export async function GET(
 
         // Build filename like "01-12-2026 wor.pdf"
         const [y, m, d] = meeting.meeting_date.split("-");
-        const typeCode = meeting.meeting_type === "work_session" ? "wor" : "reg";
+        const typeCode = meeting.meeting_type === "reorganization" ? "reorg" : "council";
         const filename = `${m}-${d}-${y} ${typeCode}.pdf`;
 
         resolve(

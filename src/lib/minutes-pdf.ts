@@ -11,7 +11,7 @@ const PAGE = {
   get bottomLimit() { return this.height - this.marginBottom - 14; },
 };
 
-// Measured from actual Edison Township minutes PDF
+// PDF formatting constants
 const FONT_SIZE = 10;
 const LINE_GAP = 1;
 const LINE_HEIGHT = FONT_SIZE + LINE_GAP; // ~11pt, matching actual's 11.3pt
@@ -22,7 +22,7 @@ const FONT_BOLD = "Times-Bold";
 
 interface MinutesPDFOptions {
   meetingDate: string;
-  meetingType: "work_session" | "regular";
+  meetingType: "council" | "reorganization";
   minutes: string;
   isDraft?: boolean;
 }
@@ -51,6 +51,7 @@ function isFullWidthLine(text: string): boolean {
     text.startsWith("A Worksession") ||
     text.startsWith("A Regular") ||
     text.startsWith("A Combined") ||
+    text.startsWith("A Council") ||
     text.startsWith("Present were") ||
     text.startsWith("Also present") ||
     text.startsWith("The Township Clerk advised") ||
@@ -59,6 +60,11 @@ function isFullWidthLine(text: string): boolean {
     text.startsWith("On a motion") ||
     text.startsWith("Hearing no further")
   );
+}
+
+/** Lines that should be centered (resolution/ordinance headers like "RESOLUTION #26-301") */
+function isCenteredLine(text: string): boolean {
+  return /^RESOLUTION\s+#/.test(text);
 }
 
 /** Check if line should be bold within a section */
@@ -88,7 +94,7 @@ export function generateMinutesPDF(options: MinutesPDFOptions): PDFKit.PDFDocume
     },
     info: {
       Title: `Council Meeting Minutes - ${formatLongDate(meetingDate)}`,
-      Author: "Township of Edison Municipal Clerk",
+      Author: "Township of Piscataway Municipal Clerk",
     },
   });
 
@@ -265,6 +271,26 @@ export function generateMinutesPDF(options: MinutesPDFOptions): PDFKit.PDFDocume
 
     if (trimmed === "") {
       blankLine();
+      continue;
+    }
+
+    // Centered lines (resolution headers like "RESOLUTION #26-301")
+    if (isCenteredLine(trimmed)) {
+      ensureSpace(LINE_HEIGHT * 2);
+      writeText(trimmed, PAGE.marginLeft, PAGE.contentWidth, { align: "center", bold: true });
+      continue;
+    }
+
+    // Bullet points (• and ○)
+    if (trimmed.startsWith("•") || trimmed.startsWith("○")) {
+      const isSub = trimmed.startsWith("○");
+      const indent = isSub ? 36 : 18;
+      ensureSpace(LINE_HEIGHT);
+      if (hasReviewMarker(trimmed)) {
+        writeReviewLine(trimmed, PAGE.marginLeft + indent, PAGE.contentWidth - indent);
+      } else {
+        writeText(trimmed, PAGE.marginLeft + indent, PAGE.contentWidth - indent);
+      }
       continue;
     }
 

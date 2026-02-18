@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDocketEntry, updateDocketEntry, getMeetingsByDate, insertDocketHistory, getDocketHistory, getOrdinanceTracking, upsertOrdinanceTracking, getNextRegularMeetingAfter } from "@/lib/db";
+import { getDocketEntry, updateDocketEntry, getMeetingsByDate, insertDocketHistory, getDocketHistory, getOrdinanceTracking, upsertOrdinanceTracking, getNextCouncilMeetingAfter } from "@/lib/db";
 import { maybeAutoGenerateMinutes } from "@/lib/minutes-generator";
 
 export async function GET(request: NextRequest) {
@@ -97,43 +97,28 @@ export async function PATCH(request: NextRequest) {
       const updates: Record<string, string | number | null> = {};
       const meetingDate = body.target_meeting_date;
 
-      // Determine meeting type from the meetings table
-      const workSession = meetings.find((m) => m.meeting_type === "work_session");
-      const regular = meetings.find((m) => m.meeting_type === "regular");
+      // Auto-populate ordinance tracking based on assignment
+      // Piscataway: ordinances are introduced at one council meeting, public hearing/adoption at the next
+      const councilMeeting = meetings.find((m) => m.meeting_type === "council");
 
-      if (workSession) {
-        // Work session = introduction / first reading
+      if (councilMeeting) {
         if (!tracking?.introduction_date) {
+          // First assignment = introduction / first reading
           updates.introduction_date = meetingDate;
-          updates.introduction_meeting = `Work Session ${new Date(meetingDate + "T12:00:00").toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "numeric" })}`;
+          updates.introduction_meeting = `Council Meeting ${new Date(meetingDate + "T12:00:00").toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "numeric" })}`;
 
-          // Auto-suggest hearing date: next regular meeting ≥10 days after introduction
+          // Auto-suggest hearing date: next council meeting ≥10 days after introduction
           if (!tracking?.hearing_date) {
-            const nextRegular = getNextRegularMeetingAfter(meetingDate, 10);
-            if (nextRegular) {
-              updates.hearing_date = nextRegular.meeting_date;
+            const nextCouncil = getNextCouncilMeetingAfter(meetingDate, 10);
+            if (nextCouncil) {
+              updates.hearing_date = nextCouncil.meeting_date;
             }
           }
-        } else if (tracking?.introduction_date && tracking.introduction_date !== meetingDate) {
-          // Ordinance being moved to a different work session — update introduction
-          updates.introduction_date = meetingDate;
-          updates.introduction_meeting = `Work Session ${new Date(meetingDate + "T12:00:00").toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "numeric" })}`;
-
-          // Re-suggest hearing date based on new introduction date
-          if (!tracking.adoption_date) {
-            const nextRegular = getNextRegularMeetingAfter(meetingDate, 10);
-            if (nextRegular) {
-              updates.hearing_date = nextRegular.meeting_date;
-            }
-          }
-        }
-      } else if (regular) {
-        if (tracking?.introduction_date && !tracking?.hearing_date) {
-          // Already introduced — this regular meeting is the hearing/second reading
-          updates.hearing_date = meetingDate;
-        } else if (tracking?.introduction_date && tracking?.hearing_date && !tracking?.adoption_date) {
-          // Already has a hearing date — moving to another regular meeting means adoption
-          if (tracking.hearing_date !== meetingDate) {
+        } else if (tracking.introduction_date !== meetingDate && !tracking?.adoption_date) {
+          // Already introduced — this meeting is the hearing/adoption
+          if (!tracking?.hearing_date) {
+            updates.hearing_date = meetingDate;
+          } else if (tracking.hearing_date !== meetingDate) {
             updates.adoption_date = meetingDate;
             // Auto-calculate effective date (20 days after adoption, unless emergency)
             if (!tracking.is_emergency) {
@@ -141,16 +126,6 @@ export async function PATCH(request: NextRequest) {
               d.setDate(d.getDate() + 20);
               updates.effective_date = d.toISOString().split("T")[0];
             }
-          }
-        } else if (!tracking?.introduction_date) {
-          // If no introduction yet, this regular meeting is introduction
-          updates.introduction_date = meetingDate;
-          updates.introduction_meeting = `Regular Meeting ${new Date(meetingDate + "T12:00:00").toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "numeric" })}`;
-
-          // Auto-suggest hearing date for next eligible regular meeting
-          const nextRegular = getNextRegularMeetingAfter(meetingDate, 10);
-          if (nextRegular) {
-            updates.hearing_date = nextRegular.meeting_date;
           }
         }
       }

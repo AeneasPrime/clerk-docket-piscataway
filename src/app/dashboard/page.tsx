@@ -202,14 +202,22 @@ function fullDate(dateStr: string): string {
   } catch { return dateStr; }
 }
 
-function nextWorkSession(): { date: Date; days: number } {
+// Piscataway 2026 council meeting schedule
+const PISCATAWAY_MEETINGS = [
+  "2026-01-02", "2026-01-20", "2026-02-10", "2026-03-12", "2026-04-14",
+  "2026-05-12", "2026-06-09", "2026-06-23", "2026-07-14", "2026-08-11",
+  "2026-09-08", "2026-09-22", "2026-10-13", "2026-10-27", "2026-11-10",
+  "2026-11-24", "2026-12-08", "2026-12-22",
+];
+
+function nextCouncilMeeting(): { date: Date; days: number } {
   const now = new Date();
-  const ws = new Date(now);
-  ws.setDate(now.getDate() + ((8 - now.getDay()) % 7 || 7));
-  ws.setHours(19, 0, 0, 0);
+  const todayStr = now.toISOString().split("T")[0];
+  const upcoming = PISCATAWAY_MEETINGS.find((d) => d >= todayStr) ?? PISCATAWAY_MEETINGS[PISCATAWAY_MEETINGS.length - 1];
+  const mtg = new Date(upcoming + "T19:00:00");
   const today = new Date(now); today.setHours(0, 0, 0, 0);
-  const target = new Date(ws); target.setHours(0, 0, 0, 0);
-  return { date: ws, days: Math.ceil((target.getTime() - today.getTime()) / 86400000) };
+  const target = new Date(mtg); target.setHours(0, 0, 0, 0);
+  return { date: mtg, days: Math.max(0, Math.ceil((target.getTime() - today.getTime()) / 86400000)) };
 }
 
 function completenessIssues(c: CompletenessCheck): string[] {
@@ -249,7 +257,7 @@ function CommandCenter({
   onViewChange: (v: string) => void;
   onSelect: (id: number) => void;
 }) {
-  const ws = nextWorkSession();
+  const ws = nextCouncilMeeting();
   const accepted = useMemo(() => entries.filter((e) => e.status === "accepted" || e.status === "on_agenda"), [entries]);
   const newItems = useMemo(() => entries.filter((e) => e.status === "new"), [entries]);
   const flagged = useMemo(() => entries.filter((e) => e.status === "needs_info"), [entries]);
@@ -740,7 +748,7 @@ function TopBar({
   scanMessage: string | null;
   onScan: () => void;
 }) {
-  const ws = nextWorkSession();
+  const ws = nextCouncilMeeting();
   const onAgenda = stats?.accepted ?? 0;
   const total = stats?.total ?? 0;
   const pct = total === 0 ? 0 : Math.round((onAgenda / total) * 100);
@@ -750,7 +758,7 @@ function TopBar({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-8">
           <div>
-            <p className="text-[11px] font-medium uppercase tracking-widest" style={{ color: "#6B6F76" }}>Next Work Session</p>
+            <p className="text-[11px] font-medium uppercase tracking-widest" style={{ color: "#6B6F76" }}>Next Council Meeting</p>
             <p className="mt-0.5 text-lg font-semibold tabular-nums" style={{ color: "#1D2024" }}>
               {ws.date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
               <span className={`ml-2 text-sm font-normal ${ws.days <= 2 ? "text-red-500" : ws.days <= 5 ? "text-amber-500" : ""}`} style={ws.days > 5 ? { color: "#9CA0AB" } : undefined}>
@@ -1181,9 +1189,9 @@ function generateOrdinanceTitle(
   const project = typeof fields.project_name === "string" ? fields.project_name : null;
 
   if (itemType === "ordinance_amendment") {
-    return `AN ORDINANCE TO AMEND AND SUPPLEMENT THE REVISED GENERAL ORDINANCES OF THE TOWNSHIP OF EDISON, COUNTY OF MIDDLESEX, STATE OF NEW JERSEY, ${project ? `AMENDING ${project.toUpperCase()}` : (summary?.toUpperCase() ?? "AMENDING THE REVISED GENERAL ORDINANCES")}${citation ? ` (${citation.toUpperCase()})` : ""}`;
+    return `AN ORDINANCE TO AMEND AND SUPPLEMENT THE REVISED GENERAL ORDINANCES OF THE TOWNSHIP OF PISCATAWAY, COUNTY OF MIDDLESEX, STATE OF NEW JERSEY, ${project ? `AMENDING ${project.toUpperCase()}` : (summary?.toUpperCase() ?? "AMENDING THE REVISED GENERAL ORDINANCES")}${citation ? ` (${citation.toUpperCase()})` : ""}`;
   }
-  return `AN ORDINANCE OF THE TOWNSHIP OF EDISON, COUNTY OF MIDDLESEX, STATE OF NEW JERSEY, ${project ? `ESTABLISHING ${project.toUpperCase()}` : (summary?.toUpperCase() ?? "PROVIDING FOR THE GENERAL WELFARE")}${citation ? ` (${citation.toUpperCase()})` : ""}`;
+  return `AN ORDINANCE OF THE TOWNSHIP OF PISCATAWAY, COUNTY OF MIDDLESEX, STATE OF NEW JERSEY, ${project ? `ESTABLISHING ${project.toUpperCase()}` : (summary?.toUpperCase() ?? "PROVIDING FOR THE GENERAL WELFARE")}${citation ? ` (${citation.toUpperCase()})` : ""}`;
 }
 
 // --- Live Agenda ---
@@ -1844,7 +1852,7 @@ function OrdTrackingForm({
           <div>
             <label className={labelStyle} style={{ color: "#6B6F76" }}>Meeting</label>
             <input type="text" value={form.introduction_meeting} onChange={(e) => set("introduction_meeting", e.target.value)}
-              placeholder="Regular Meeting 2/11/2026" className={fieldStyle} style={{ borderColor: "#E5E5E8", color: "#1D2024" }} />
+              placeholder="Council Meeting 2/10/2026" className={fieldStyle} style={{ borderColor: "#E5E5E8", color: "#1D2024" }} />
           </div>
         </div>
       </div>
@@ -2022,7 +2030,7 @@ function OrdTrackingForm({
           <div>
             <label className={labelStyle} style={{ color: "#6B6F76" }}>URL</label>
             <input type="text" value={form.website_url} onChange={(e) => set("website_url", e.target.value)}
-              placeholder="https://www.edisonnj.org/ordinances/..." className={fieldStyle} style={{ borderColor: "#E5E5E8", color: "#1D2024" }} />
+              placeholder="https://www.piscatawaynj.org/ordinances/..." className={fieldStyle} style={{ borderColor: "#E5E5E8", color: "#1D2024" }} />
           </div>
         </div>
       </div>
@@ -2137,7 +2145,7 @@ function LiveAgenda({
     [entries]
   );
 
-  // Categorize items for Edison agenda structure
+  // Categorize items for agenda structure
   const resolutions = useMemo(() => accepted.filter((e) => e.item_type?.startsWith("resolution_")), [accepted]);
   const ordinances = useMemo(() => accepted.filter((e) => e.item_type?.startsWith("ordinance_")), [accepted]);
   const discussionItems = useMemo(() => accepted.filter((e) =>
@@ -2162,7 +2170,7 @@ function LiveAgenda({
   const filteredDiscussion = useMemo(() => discussionItems.filter(matchesSearch), [discussionItems, matchesSearch]);
   const filteredTotal = filteredResolutions.length + filteredOrdinances.length + filteredDiscussion.length;
 
-  const ws = nextWorkSession();
+  const ws = nextCouncilMeeting();
   const meetingDateFull = ws.date.toLocaleDateString("en-US", {
     month: "long", day: "numeric", year: "numeric",
   }).toUpperCase();
@@ -2283,10 +2291,10 @@ function LiveAgenda({
       {/* Document */}
       <div className="agenda-doc-wrapper mx-auto max-w-3xl px-6 py-10">
         <div className="agenda-doc rounded-xl bg-white p-12 shadow-sm ring-1 ring-slate-200/60" style={{ fontFamily: AGENDA_FONT_MAP[prefs.font], fontSize: `${prefs.fontSize}px`, lineHeight: AGENDA_SPACING_MAP[prefs.spacing] }}>
-          {/* Header — Edison format */}
+          {/* Header — Piscataway format */}
           <div className="mb-10 text-center">
             <h1 className="text-base font-bold uppercase tracking-widest text-slate-900">
-              TOWNSHIP OF EDISON
+              TOWNSHIP OF PISCATAWAY
             </h1>
             <p className="mt-2 text-sm font-bold uppercase tracking-wide text-slate-800">
               COUNCIL MEETING AGENDA
@@ -2306,7 +2314,7 @@ function LiveAgenda({
             </div>
           )}
 
-          {/* Agenda sections — Edison format with full resolution text */}
+          {/* Agenda sections — Piscataway format with full resolution text */}
           {accepted.length > 0 && (
             <div className="mt-8 space-y-10">
               {/* CONSENT AGENDA */}

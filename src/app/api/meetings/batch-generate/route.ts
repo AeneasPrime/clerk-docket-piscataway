@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getPastMeetingsWithoutMinutes, getAgendaItemsForMeeting, updateMeeting } from "@/lib/db";
-import { syncVideosFromCablecast } from "@/lib/video-sync";
+import { syncVideosFromYouTube } from "@/lib/video-sync";
 import { fetchTranscriptData, generateMinutes, analyzeOrdinanceOutcomes } from "@/lib/minutes-generator";
 
 // Allow long-running batch generation (up to 10 minutes)
@@ -19,8 +19,8 @@ export async function POST() {
   const results: BatchResult[] = [];
 
   try {
-    // Step 1: Sync video URLs from Cablecast for any meetings missing them
-    const syncResult = await syncVideosFromCablecast();
+    // Step 1: Sync video URLs from YouTube for any meetings missing them
+    const syncResult = await syncVideosFromYouTube();
     console.log(`[batch] Video sync: ${syncResult.matched} new, ${syncResult.already_linked} existing, ${syncResult.unmatched} unmatched`);
 
     // Step 2: Find all past meetings with video URLs but no minutes
@@ -44,7 +44,7 @@ export async function POST() {
       };
 
       try {
-        // Fetch transcript via Cablecast transcript API
+        // Fetch transcript (YouTube captions → Whisper fallback)
         const transcriptData = await fetchTranscriptData(meeting.video_url!);
 
         if (!transcriptData.transcript?.trim()) {

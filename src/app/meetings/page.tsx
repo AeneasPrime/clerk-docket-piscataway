@@ -6,20 +6,16 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 
 interface Meeting {
   id: number;
-  meeting_type: "work_session" | "regular";
+  meeting_type: "council" | "reorganization";
   meeting_date: string;
+  meeting_time: string;
   cycle_date: string;
   video_url: string | null;
+  agenda_url: string | null;
   minutes: string;
   status: "upcoming" | "in_progress" | "completed";
   created_at: string;
   updated_at: string;
-}
-
-interface MeetingCycle {
-  cycle_date: string;
-  work_session: Meeting | null;
-  regular_meeting: Meeting | null;
 }
 
 interface DocketEntry {
@@ -35,8 +31,6 @@ interface MeetingWithAgenda extends Meeting {
   agenda_items: DocketEntry[];
 }
 
-// --- Constants ---
-
 // --- Helpers ---
 
 function formatDate(dateStr: string): string {
@@ -49,9 +43,17 @@ function formatShortDate(dateStr: string): string {
   return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
 
-function formatWeekOf(dateStr: string): string {
+function formatMonthYear(dateStr: string): string {
   const d = new Date(dateStr + "T12:00:00");
-  return d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  return d.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+}
+
+function meetingTypeLabel(type: string): string {
+  return type === "reorganization" ? "Reorganization" : "Council Meeting";
+}
+
+function meetingTypeColor(type: string): string {
+  return type === "reorganization" ? "#D97706" : "#5E6AD2";
 }
 
 function statusBadge(status: string) {
@@ -82,11 +84,9 @@ function parseReviewTimestamp(marker: string): { display: string; seconds: numbe
   const match = marker.match(/@(\d{1,2}):(\d{2})(?::(\d{2}))?/);
   if (!match) return null;
   if (match[3]) {
-    // H:MM:SS
     const h = parseInt(match[1]), m = parseInt(match[2]), s = parseInt(match[3]);
     return { display: `${h}:${match[2]}:${match[3]}`, seconds: h * 3600 + m * 60 + s };
   }
-  // MM:SS
   const m = parseInt(match[1]), s = parseInt(match[2]);
   return { display: `${match[1]}:${match[2]}`, seconds: m * 60 + s };
 }
@@ -131,7 +131,7 @@ function ReviewText({ text, videoUrl, activeMarker, markerOffset }: {
           <span
             key={i}
             id={domId}
-            className="group/review inline-block relative rounded px-1 py-0.5 text-[11px] font-medium transition-all"
+            className="group/review relative rounded px-1 text-[11px] font-medium transition-all"
             style={{
               background: isActive ? "rgba(245, 158, 11, 0.3)" : "rgba(245, 158, 11, 0.12)",
               color: "#B45309",
@@ -139,7 +139,15 @@ function ReviewText({ text, videoUrl, activeMarker, markerOffset }: {
               cursor: canLink ? "pointer" : "default",
               boxShadow: isActive ? "0 0 0 3px rgba(217, 119, 6, 0.2)" : "none",
             }}
-            onClick={canLink ? () => window.open(ts ? `${videoUrl}?seekto=${ts.seconds}` : videoUrl, "_blank") : undefined}
+            onClick={canLink ? () => {
+              if (ts) {
+                const url = new URL(videoUrl!);
+                url.searchParams.set("t", String(ts.seconds));
+                window.open(url.toString(), "_blank");
+              } else {
+                window.open(videoUrl, "_blank");
+              }
+            } : undefined}
           >
             {displayText}
             {canLink && !isActive && (
@@ -166,10 +174,16 @@ function isAllCaps(text: string): boolean {
 function isFullWidthLine(text: string): boolean {
   return (
     text.startsWith("A Worksession") || text.startsWith("A Regular") || text.startsWith("A Combined") ||
+    text.startsWith("A Council") ||
     text.startsWith("Present were") || text.startsWith("Also present") ||
     text.startsWith("The Township Clerk advised") || text.startsWith("This meeting") ||
     text.startsWith("http") || text.startsWith("On a motion") || text.startsWith("Hearing no further")
   );
+}
+
+/** Lines that should be centered (resolution/ordinance headers like "RESOLUTION #26-301") */
+function isCenteredLine(text: string): boolean {
+  return /^RESOLUTION\s+#/.test(text);
 }
 
 /** Inline-editable line — contentEditable span that saves on blur (same pattern as live agenda) */
@@ -218,17 +232,16 @@ function MinutesDocument({ text, videoUrl, activeMarker, onLineEdit }: {
 }) {
   const lines = text.split("\n");
 
-  // Title block: everything before "A Worksession..." or "A Regular..."
+  // Title block: everything before "A Worksession..." or "A Regular..." or "A Council..."
   let titleEnd = 0;
   for (let i = 0; i < lines.length; i++) {
     const t = lines[i].trim();
-    if (t.startsWith("A Worksession") || t.startsWith("A Regular") || t.startsWith("A Combined")) {
+    if (t.startsWith("A Worksession") || t.startsWith("A Regular") || t.startsWith("A Combined") || t.startsWith("A Council")) {
       titleEnd = i;
       break;
     }
   }
   const titleLines = lines.slice(0, titleEnd).filter(l => l.trim());
-  // Map filtered title lines back to their original indices
   const titleLineIndices: number[] = [];
   for (let i = 0; i < titleEnd; i++) {
     if (lines[i].trim()) titleLineIndices.push(i);
@@ -242,13 +255,11 @@ function MinutesDocument({ text, videoUrl, activeMarker, onLineEdit }: {
   const bodyLines = lines.slice(titleEnd, sigStart);
   const sigLines = lines.slice(sigStart);
 
-  // Track global marker offset so each ReviewText gets unique IDs
   let globalMarkerOffset = 0;
   function countMarkers(lineText: string): number {
     return (lineText.match(/\[REVIEW:[^\]]*\]/g) ?? []).length;
   }
 
-  // Track section state for indentation and bold logic
   const sectionNumPattern = /^(\d+)\.\s+/;
   let insideSection = false;
   let inDiscussion = false;
@@ -257,14 +268,13 @@ function MinutesDocument({ text, videoUrl, activeMarker, onLineEdit }: {
 
   for (let i = 0; i < bodyLines.length; i++) {
     const trimmed = bodyLines[i].trim();
-    const absIdx = titleEnd + i; // absolute line index in full text
+    const absIdx = titleEnd + i;
 
     if (trimmed === "") {
       bodyElements.push(<div key={`b${i}`} style={{ height: "11px" }} />);
       continue;
     }
 
-    // Track Discussion Items section
     if (/^\d+\.\s+DISCUSSION/.test(trimmed)) inDiscussion = true;
     else if (/^\d+\.\s+/.test(trimmed) && !trimmed.includes("DISCUSSION")) inDiscussion = false;
 
@@ -280,8 +290,24 @@ function MinutesDocument({ text, videoUrl, activeMarker, onLineEdit }: {
       <ReviewText text={trimmed} videoUrl={videoUrl} activeMarker={activeMarker} markerOffset={currentOffset} />
     );
 
-    if (sectionMatch) {
-      // Numbered section header — bold, number flush left + title indented
+    if (isCenteredLine(trimmed)) {
+      bodyElements.push(
+        <p key={`b${i}`} style={{ textAlign: "center", fontWeight: 700, marginTop: "11px" }}>
+          <EditableLine value={trimmed} lineIdx={absIdx} onSave={onLineEdit}>
+            {lineContent}
+          </EditableLine>
+        </p>
+      );
+    } else if (trimmed.startsWith("•") || trimmed.startsWith("○")) {
+      const isSub = trimmed.startsWith("○");
+      bodyElements.push(
+        <p key={`b${i}`} style={{ paddingLeft: isSub ? "48px" : "24px", textIndent: "-18px" }}>
+          <EditableLine value={trimmed} lineIdx={absIdx} onSave={onLineEdit}>
+            {lineContent}
+          </EditableLine>
+        </p>
+      );
+    } else if (sectionMatch) {
       insideSection = true;
       const numText = sectionMatch[0];
       bodyElements.push(
@@ -295,7 +321,6 @@ function MinutesDocument({ text, videoUrl, activeMarker, onLineEdit }: {
         </div>
       );
     } else if (insideSection && !isFullWidthLine(trimmed)) {
-      // Indented content within a section
       const bold = isAllCaps(trimmed) ||
         (inDiscussion && (
           trimmed.startsWith("Councilmember") || trimmed.startsWith("Council President") ||
@@ -309,7 +334,6 @@ function MinutesDocument({ text, videoUrl, activeMarker, onLineEdit }: {
         </p>
       );
     } else {
-      // Full-width text — preamble, motions, etc.
       if (trimmed.startsWith("On a motion") || trimmed.startsWith("Hearing no further")) insideSection = false;
       bodyElements.push(
         <p key={`b${i}`}>
@@ -350,7 +374,6 @@ function MinutesDocument({ text, videoUrl, activeMarker, onLineEdit }: {
         margin: "24px auto 0",
       }}
     >
-      {/* Title block — centered, bold */}
       <div style={{ textAlign: "center", marginBottom: "22px" }}>
         {titleLines.map((line, ti) => (
           <div key={ti} style={{ fontWeight: 700 }}>
@@ -361,10 +384,8 @@ function MinutesDocument({ text, videoUrl, activeMarker, onLineEdit }: {
         ))}
       </div>
 
-      {/* Body */}
-      <div>{bodyElements}</div>
+      <div style={{ lineHeight: 1.5 }}>{bodyElements}</div>
 
-      {/* Signature block */}
       {sigNames.length > 0 && (
         <div style={{ marginTop: "44px" }}>
           <div style={{ display: "flex", justifyContent: "space-between" }}>
@@ -427,32 +448,29 @@ function Sidebar({ filter, onFilterChange }: {
 // --- Meeting Card ---
 
 function MeetingCard({ meeting, onClick }: {
-  meeting: Meeting | null;
-  type: "work_session" | "regular";
+  meeting: Meeting;
   onClick: () => void;
 }) {
-  if (!meeting) return null;
-
-  const isWorkSession = meeting.meeting_type === "work_session";
   const hasVideo = !!meeting.video_url;
   const hasMinutes = !!meeting.minutes;
+  const typeColor = meetingTypeColor(meeting.meeting_type);
 
   return (
     <button
       onClick={onClick}
-      className="flex-1 rounded-lg bg-white text-left transition-all hover:shadow-md"
+      className="w-full rounded-lg bg-white text-left transition-all hover:shadow-md"
       style={{ border: "1px solid #E5E5E8" }}
     >
       <div className="p-5">
         <div className="flex items-start justify-between">
           <div>
-            <p className="text-[11px] font-medium uppercase tracking-wider" style={{ color: isWorkSession ? "#5E6AD2" : "#26B5CE" }}>
-              {isWorkSession ? "Work Session" : "Regular Meeting"}
+            <p className="text-[11px] font-medium uppercase tracking-wider" style={{ color: typeColor }}>
+              {meetingTypeLabel(meeting.meeting_type)}
             </p>
             <p className="mt-1 text-[15px] font-semibold" style={{ color: "#1D2024" }}>
               {formatShortDate(meeting.meeting_date)}
             </p>
-            <p className="mt-0.5 text-xs" style={{ color: "#9CA0AB" }}>7:00 PM</p>
+            <p className="mt-0.5 text-xs" style={{ color: "#9CA0AB" }}>{meeting.meeting_time}</p>
           </div>
           {statusBadge(meeting.status)}
         </div>
@@ -484,33 +502,6 @@ function MeetingCard({ meeting, onClick }: {
   );
 }
 
-// --- Meeting Cycle Row ---
-
-function MeetingCycleRow({ cycle, onSelect }: {
-  cycle: MeetingCycle;
-  onSelect: (meeting: Meeting) => void;
-}) {
-  return (
-    <div className="mb-6">
-      <p className="mb-3 text-xs font-medium uppercase tracking-wider" style={{ color: "#6B6F76" }}>
-        Week of {formatWeekOf(cycle.cycle_date)}
-      </p>
-      <div className="flex gap-4">
-        <MeetingCard
-          meeting={cycle.work_session}
-          type="work_session"
-          onClick={() => cycle.work_session && onSelect(cycle.work_session)}
-        />
-        <MeetingCard
-          meeting={cycle.regular_meeting}
-          type="regular"
-          onClick={() => cycle.regular_meeting && onSelect(cycle.regular_meeting)}
-        />
-      </div>
-    </div>
-  );
-}
-
 // --- Minutes History Sidebar ---
 
 interface MinutesHistoryEntry {
@@ -521,7 +512,6 @@ interface MinutesHistoryEntry {
   changed_at: string;
 }
 
-/** Find the first differing line between two texts */
 function diffLine(oldText: string, newText: string): { oldLine: string; newLine: string } | null {
   const oldLines = oldText.split("\n");
   const newLines = newText.split("\n");
@@ -663,7 +653,6 @@ function MeetingDetail({ meetingId, onBack }: {
     if (!meeting || !currentMarker) return;
     const updated = meeting.minutes.replace(currentMarker, reviewEditText);
     await save({ minutes: updated });
-    // After save, markers shift — recompute
     const remaining = getAllReviewMarkers(updated);
     if (remaining.length === 0) {
       setReviewMode(false);
@@ -709,7 +698,6 @@ function MeetingDetail({ meetingId, onBack }: {
     await save({ video_url: url });
     setEditingVideo(false);
 
-    // Auto-generate minutes when a video link is added
     if (url) {
       setGeneratingMinutes(true);
       setGenError(null);
@@ -723,7 +711,7 @@ function MeetingDetail({ meetingId, onBack }: {
         } else {
           const data = await res.json();
           setMeeting((prev) => prev ? { ...prev, ...data } : prev);
-            }
+        }
       } catch (e) {
         setGenError(e instanceof Error ? e.message : "Generation failed");
       }
@@ -739,7 +727,6 @@ function MeetingDetail({ meetingId, onBack }: {
     const updated = lines.join("\n");
     save({ minutes: updated });
   }, [meeting?.minutes]);
-
 
   const updateStatus = (status: string) => {
     save({ status });
@@ -761,7 +748,7 @@ function MeetingDetail({ meetingId, onBack }: {
     );
   }
 
-  const isWorkSession = meeting.meeting_type === "work_session";
+  const typeColor = meetingTypeColor(meeting.meeting_type);
 
   return (
     <div className="flex-1 overflow-y-auto" style={{ background: "#F8F8F9" }}>
@@ -784,16 +771,16 @@ function MeetingDetail({ meetingId, onBack }: {
         <div className="mb-8">
           <p
             className="text-[11px] font-medium uppercase tracking-wider"
-            style={{ color: isWorkSession ? "#5E6AD2" : "#26B5CE" }}
+            style={{ color: typeColor }}
           >
-            {isWorkSession ? "Work Session" : "Regular Meeting"}
+            {meetingTypeLabel(meeting.meeting_type)}
           </p>
           <h1 className="mt-1 text-2xl font-semibold" style={{ color: "#1D2024" }}>
             {formatDate(meeting.meeting_date)}
           </h1>
           <div className="mt-2 flex items-center gap-3">
             {statusBadge(meeting.status)}
-            <span className="text-xs" style={{ color: "#9CA0AB" }}>7:00 PM</span>
+            <span className="text-xs" style={{ color: "#9CA0AB" }}>{meeting.meeting_time}</span>
             {!saving && (
               <div className="flex gap-1">
                 {(["upcoming", "in_progress", "completed"] as const).map((s) => (
@@ -890,7 +877,6 @@ function MeetingDetail({ meetingId, onBack }: {
 
         {/* Minutes Section */}
         <div className="mb-6">
-          {/* Toolbar */}
           <div className="rounded-lg bg-white p-5" style={{ border: "1px solid #E5E5E8" }}>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -941,6 +927,19 @@ function MeetingDetail({ meetingId, onBack }: {
                     Download PDF
                   </a>
                 )}
+                {meeting.minutes && (
+                  <a
+                    href={`/api/meetings/${meetingId}/docx`}
+                    className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition-colors"
+                    style={{ color: "#2B579A", background: "rgba(43, 87, 154, 0.06)" }}
+                    download
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /><polyline points="10 9 9 9 8 9" />
+                    </svg>
+                    Download Word
+                  </a>
+                )}
               </div>
             </div>
 
@@ -961,7 +960,6 @@ function MeetingDetail({ meetingId, onBack }: {
             ) : null}
           </div>
 
-          {/* Minutes Document — directly editable inline */}
           {meeting.minutes && !generatingMinutes && (
             <MinutesDocument text={meeting.minutes} videoUrl={meeting.video_url ?? undefined} activeMarker={currentMarker} onLineEdit={onLineEdit} />
           )}
@@ -1043,10 +1041,12 @@ function MeetingDetail({ meetingId, onBack }: {
               </svg>
               <h2 className="text-sm font-semibold" style={{ color: "#1D2024" }}>Agenda</h2>
             </div>
-            {meeting.agenda_items.length > 0 && (
+            {(meeting.agenda_url || meeting.agenda_items.length > 0) && (
               <a
-                href={`/api/meetings/${meeting.id}/agenda-pdf`}
+                href={meeting.agenda_url ?? `/api/meetings/${meeting.id}/agenda-pdf`}
                 download
+                target={meeting.agenda_url ? "_blank" : undefined}
+                rel={meeting.agenda_url ? "noopener noreferrer" : undefined}
                 className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition-colors"
                 style={{ color: "#5E6AD2", background: "rgba(94, 106, 210, 0.06)" }}
               >
@@ -1058,7 +1058,15 @@ function MeetingDetail({ meetingId, onBack }: {
             )}
           </div>
 
-          {meeting.agenda_items.length === 0 ? (
+          {meeting.agenda_url ? (
+            <div className="mt-4 overflow-hidden rounded-md border" style={{ borderColor: "#E5E5E8" }}>
+              <iframe
+                src={meeting.agenda_url}
+                className="h-[600px] w-full"
+                title="Meeting Agenda PDF"
+              />
+            </div>
+          ) : meeting.agenda_items.length === 0 ? (
             <p className="mt-3 text-xs" style={{ color: "#C8C9CC" }}>
               No agenda items assigned to this meeting yet.
               <br />
@@ -1093,21 +1101,36 @@ function MeetingDetail({ meetingId, onBack }: {
 
 export default function MeetingsPage() {
   const [filter, setFilter] = useState<"upcoming" | "past" | "all">("all");
-  const [cycles, setCycles] = useState<MeetingCycle[]>([]);
+  const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedMeetingId, setSelectedMeetingId] = useState<number | null>(null);
 
-  const fetchCycles = useCallback(async () => {
+  const fetchMeetings = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetch(`/api/meetings?filter=${filter}`);
       const data = await res.json();
-      setCycles(data.cycles ?? []);
+      setMeetings(data.meetings ?? []);
     } catch { /* ignore */ }
     setLoading(false);
   }, [filter]);
 
-  useEffect(() => { fetchCycles(); }, [fetchCycles]);
+  useEffect(() => { fetchMeetings(); }, [fetchMeetings]);
+
+  // Group meetings by month
+  const grouped = useMemo(() => {
+    const groups: { label: string; meetings: Meeting[] }[] = [];
+    let currentMonth = "";
+    for (const m of meetings) {
+      const month = formatMonthYear(m.meeting_date);
+      if (month !== currentMonth) {
+        groups.push({ label: month, meetings: [] });
+        currentMonth = month;
+      }
+      groups[groups.length - 1].meetings.push(m);
+    }
+    return groups;
+  }, [meetings]);
 
   return (
     <div className="flex h-screen">
@@ -1124,7 +1147,7 @@ export default function MeetingsPage() {
             <div className="mb-8">
               <h1 className="text-xl font-semibold" style={{ color: "#1D2024" }}>Meeting Packets</h1>
               <p className="mt-1 text-sm" style={{ color: "#9CA0AB" }}>
-                {filter === "upcoming" ? "Upcoming council meeting cycles" : filter === "past" ? "Past council meeting cycles" : "All council meeting cycles"}
+                {filter === "upcoming" ? "Upcoming council meetings" : filter === "past" ? "Past council meetings" : "All council meetings"}
               </p>
             </div>
 
@@ -1132,17 +1155,26 @@ export default function MeetingsPage() {
               <div className="flex items-center justify-center py-20">
                 <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-slate-200 border-t-indigo-500" />
               </div>
-            ) : cycles.length === 0 ? (
+            ) : meetings.length === 0 ? (
               <div className="py-20 text-center">
-                <p className="text-sm" style={{ color: "#9CA0AB" }}>No meeting cycles found.</p>
+                <p className="text-sm" style={{ color: "#9CA0AB" }}>No meetings found.</p>
               </div>
             ) : (
-              cycles.map((cycle) => (
-                <MeetingCycleRow
-                  key={cycle.cycle_date}
-                  cycle={cycle}
-                  onSelect={(meeting) => setSelectedMeetingId(meeting.id)}
-                />
+              grouped.map((group) => (
+                <div key={group.label} className="mb-6">
+                  <p className="mb-3 text-xs font-medium uppercase tracking-wider" style={{ color: "#6B6F76" }}>
+                    {group.label}
+                  </p>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {group.meetings.map((meeting) => (
+                      <MeetingCard
+                        key={meeting.id}
+                        meeting={meeting}
+                        onClick={() => setSelectedMeetingId(meeting.id)}
+                      />
+                    ))}
+                  </div>
+                </div>
               ))
             )}
           </div>

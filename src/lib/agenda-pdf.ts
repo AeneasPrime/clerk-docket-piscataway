@@ -247,9 +247,9 @@ function generateOrdinanceTitle(
   const project = typeof fields.project_name === "string" ? fields.project_name : null;
 
   if (itemType === "ordinance_amendment") {
-    return `AN ORDINANCE TO AMEND AND SUPPLEMENT THE REVISED GENERAL ORDINANCES OF THE TOWNSHIP OF EDISON, COUNTY OF MIDDLESEX, STATE OF NEW JERSEY, ${project ? `AMENDING ${project.toUpperCase()}` : (summary?.toUpperCase() ?? "AMENDING THE REVISED GENERAL ORDINANCES")}${citation ? ` (${citation.toUpperCase()})` : ""}`;
+    return `AN ORDINANCE TO AMEND AND SUPPLEMENT THE REVISED GENERAL ORDINANCES OF THE TOWNSHIP OF PISCATAWAY, COUNTY OF MIDDLESEX, STATE OF NEW JERSEY, ${project ? `AMENDING ${project.toUpperCase()}` : (summary?.toUpperCase() ?? "AMENDING THE REVISED GENERAL ORDINANCES")}${citation ? ` (${citation.toUpperCase()})` : ""}`;
   }
-  return `AN ORDINANCE OF THE TOWNSHIP OF EDISON, COUNTY OF MIDDLESEX, STATE OF NEW JERSEY, ${project ? `ESTABLISHING ${project.toUpperCase()}` : (summary?.toUpperCase() ?? "PROVIDING FOR THE GENERAL WELFARE")}${citation ? ` (${citation.toUpperCase()})` : ""}`;
+  return `AN ORDINANCE OF THE TOWNSHIP OF PISCATAWAY, COUNTY OF MIDDLESEX, STATE OF NEW JERSEY, ${project ? `ESTABLISHING ${project.toUpperCase()}` : (summary?.toUpperCase() ?? "PROVIDING FOR THE GENERAL WELFARE")}${citation ? ` (${citation.toUpperCase()})` : ""}`;
 }
 
 interface TextOverride {
@@ -341,7 +341,7 @@ export function generateAgendaPDF(entries: DocketEntry[], meetingDateStr: string
 
   // === HEADER ===
   blankLine(2);
-  writeText("TOWNSHIP OF EDISON", PAGE.marginLeft, PAGE.contentWidth, { align: "center", bold: true });
+  writeText("TOWNSHIP OF PISCATAWAY", PAGE.marginLeft, PAGE.contentWidth, { align: "center", bold: true });
   blankLine();
   writeText("COUNCIL MEETING AGENDA", PAGE.marginLeft, PAGE.contentWidth, { align: "center", bold: true });
   blankLine();

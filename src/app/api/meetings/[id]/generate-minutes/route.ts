@@ -28,7 +28,7 @@ export async function POST(
     // Get agenda items for this meeting
     const agendaItems = getAgendaItemsForMeeting(meeting.meeting_date);
 
-    // Determine transcript source: default to fast Cablecast transcript API, allow whisper override
+    // Determine transcript source: default to YouTube captions, allow whisper override
     let useWhisper = false;
     try {
       const body = await request.json();
