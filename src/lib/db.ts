@@ -4,126 +4,135 @@ import fs from "fs";
 import type { ClassificationResult, DocketEntry, DocketStatus, Meeting, MeetingStatus, OrdinanceTracking } from "@/types";
 import { SEED_MINUTES, SEED_ORDINANCE_TRACKING } from "./seed-minutes";
 
-const dbPath = process.env.DATABASE_PATH || "./data/docket.db";
-const dbDir = path.dirname(dbPath);
+// --- Lazy database initialization (prevents SQLITE_BUSY during next build) ---
+let _db: InstanceType<typeof Database> | null = null;
 
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
+function getDb(): InstanceType<typeof Database> {
+  if (_db) return _db;
+
+  const dbPath = process.env.DATABASE_PATH || "./data/docket.db";
+  const dbDir = path.dirname(dbPath);
+
+  if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true });
+  }
+
+  _db = new Database(dbPath);
+
+  _db.pragma("journal_mode = WAL");
+  _db.pragma("busy_timeout = 5000");
+  _db.pragma("foreign_keys = ON");
+
+  _db.exec(`
+    CREATE TABLE IF NOT EXISTS config (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS docket (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email_id TEXT UNIQUE NOT NULL,
+      email_from TEXT NOT NULL,
+      email_subject TEXT NOT NULL,
+      email_date TEXT NOT NULL,
+      email_body_preview TEXT NOT NULL,
+      relevant INTEGER NOT NULL DEFAULT 0,
+      confidence TEXT,
+      item_type TEXT,
+      department TEXT,
+      summary TEXT,
+      extracted_fields TEXT NOT NULL DEFAULT '{}',
+      completeness TEXT NOT NULL DEFAULT '{}',
+      attachment_filenames TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'new',
+      notes TEXT NOT NULL DEFAULT '',
+      target_meeting_date TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS processed_emails (
+      email_id TEXT PRIMARY KEY,
+      processed_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_docket_status ON docket(status);
+    CREATE INDEX IF NOT EXISTS idx_docket_item_type ON docket(item_type);
+    CREATE INDEX IF NOT EXISTS idx_docket_relevant ON docket(relevant);
+    CREATE INDEX IF NOT EXISTS idx_docket_created_at ON docket(created_at);
+
+    CREATE TABLE IF NOT EXISTS docket_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      docket_id INTEGER NOT NULL REFERENCES docket(id),
+      field_name TEXT NOT NULL,
+      old_value TEXT NOT NULL,
+      new_value TEXT NOT NULL,
+      changed_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_docket_history_docket ON docket_history(docket_id);
+
+    CREATE TABLE IF NOT EXISTS meetings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      meeting_type TEXT NOT NULL CHECK(meeting_type IN ('council', 'reorganization')),
+      meeting_date TEXT NOT NULL,
+      meeting_time TEXT NOT NULL DEFAULT '7:00 PM',
+      cycle_date TEXT NOT NULL,
+      video_url TEXT,
+      agenda_url TEXT,
+      minutes TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'upcoming' CHECK(status IN ('upcoming', 'in_progress', 'completed')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_meetings_type_date ON meetings(meeting_type, meeting_date);
+    CREATE INDEX IF NOT EXISTS idx_meetings_cycle ON meetings(cycle_date);
+
+    CREATE TABLE IF NOT EXISTS minutes_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      meeting_id INTEGER NOT NULL REFERENCES meetings(id),
+      old_value TEXT NOT NULL,
+      new_value TEXT NOT NULL,
+      changed_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_minutes_history_meeting ON minutes_history(meeting_id);
+
+    CREATE TABLE IF NOT EXISTS ordinance_tracking (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      docket_id INTEGER NOT NULL UNIQUE REFERENCES docket(id) ON DELETE CASCADE,
+      ordinance_number TEXT,
+      introduction_date TEXT,
+      introduction_meeting TEXT,
+      pub_intro_date TEXT,
+      pub_intro_newspaper TEXT,
+      bulletin_posted_date TEXT,
+      hearing_date TEXT,
+      hearing_amended INTEGER DEFAULT 0,
+      hearing_notes TEXT DEFAULT '',
+      adoption_date TEXT,
+      adoption_vote TEXT,
+      adoption_failed INTEGER DEFAULT 0,
+      pub_final_date TEXT,
+      pub_final_newspaper TEXT,
+      effective_date TEXT,
+      is_emergency INTEGER DEFAULT 0,
+      website_posted_date TEXT,
+      website_url TEXT,
+      clerk_notes TEXT DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_ord_tracking_docket ON ordinance_tracking(docket_id);
+  `);
+
+  // --- Migrations ---
+  try { _db.prepare("SELECT text_override FROM docket LIMIT 0").get(); }
+  catch { _db.exec("ALTER TABLE docket ADD COLUMN text_override TEXT"); }
+  try { _db.prepare("SELECT meeting_time FROM meetings LIMIT 0").get(); }
+  catch { _db.exec("ALTER TABLE meetings ADD COLUMN meeting_time TEXT NOT NULL DEFAULT '7:00 PM'"); }
+
+  return _db;
 }
-
-const db = new Database(dbPath);
-
-db.pragma("journal_mode = WAL");
-db.pragma("busy_timeout = 5000");
-db.pragma("foreign_keys = ON");
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS config (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS docket (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email_id TEXT UNIQUE NOT NULL,
-    email_from TEXT NOT NULL,
-    email_subject TEXT NOT NULL,
-    email_date TEXT NOT NULL,
-    email_body_preview TEXT NOT NULL,
-    relevant INTEGER NOT NULL DEFAULT 0,
-    confidence TEXT,
-    item_type TEXT,
-    department TEXT,
-    summary TEXT,
-    extracted_fields TEXT NOT NULL DEFAULT '{}',
-    completeness TEXT NOT NULL DEFAULT '{}',
-    attachment_filenames TEXT NOT NULL DEFAULT '[]',
-    status TEXT NOT NULL DEFAULT 'new',
-    notes TEXT NOT NULL DEFAULT '',
-    target_meeting_date TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS processed_emails (
-    email_id TEXT PRIMARY KEY,
-    processed_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_docket_status ON docket(status);
-  CREATE INDEX IF NOT EXISTS idx_docket_item_type ON docket(item_type);
-  CREATE INDEX IF NOT EXISTS idx_docket_relevant ON docket(relevant);
-  CREATE INDEX IF NOT EXISTS idx_docket_created_at ON docket(created_at);
-
-  CREATE TABLE IF NOT EXISTS docket_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    docket_id INTEGER NOT NULL REFERENCES docket(id),
-    field_name TEXT NOT NULL,
-    old_value TEXT NOT NULL,
-    new_value TEXT NOT NULL,
-    changed_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX IF NOT EXISTS idx_docket_history_docket ON docket_history(docket_id);
-
-  CREATE TABLE IF NOT EXISTS meetings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    meeting_type TEXT NOT NULL CHECK(meeting_type IN ('council', 'reorganization')),
-    meeting_date TEXT NOT NULL,
-    meeting_time TEXT NOT NULL DEFAULT '7:00 PM',
-    cycle_date TEXT NOT NULL,
-    video_url TEXT,
-    agenda_url TEXT,
-    minutes TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'upcoming' CHECK(status IN ('upcoming', 'in_progress', 'completed')),
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_meetings_type_date ON meetings(meeting_type, meeting_date);
-  CREATE INDEX IF NOT EXISTS idx_meetings_cycle ON meetings(cycle_date);
-
-  CREATE TABLE IF NOT EXISTS minutes_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    meeting_id INTEGER NOT NULL REFERENCES meetings(id),
-    old_value TEXT NOT NULL,
-    new_value TEXT NOT NULL,
-    changed_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX IF NOT EXISTS idx_minutes_history_meeting ON minutes_history(meeting_id);
-
-  CREATE TABLE IF NOT EXISTS ordinance_tracking (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    docket_id INTEGER NOT NULL UNIQUE REFERENCES docket(id) ON DELETE CASCADE,
-    ordinance_number TEXT,
-    introduction_date TEXT,
-    introduction_meeting TEXT,
-    pub_intro_date TEXT,
-    pub_intro_newspaper TEXT,
-    bulletin_posted_date TEXT,
-    hearing_date TEXT,
-    hearing_amended INTEGER DEFAULT 0,
-    hearing_notes TEXT DEFAULT '',
-    adoption_date TEXT,
-    adoption_vote TEXT,
-    adoption_failed INTEGER DEFAULT 0,
-    pub_final_date TEXT,
-    pub_final_newspaper TEXT,
-    effective_date TEXT,
-    is_emergency INTEGER DEFAULT 0,
-    website_posted_date TEXT,
-    website_url TEXT,
-    clerk_notes TEXT DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX IF NOT EXISTS idx_ord_tracking_docket ON ordinance_tracking(docket_id);
-`);
-
-// --- Migrations ---
-try { db.prepare("SELECT text_override FROM docket LIMIT 0").get(); }
-catch { db.exec("ALTER TABLE docket ADD COLUMN text_override TEXT"); }
-try { db.prepare("SELECT meeting_time FROM meetings LIMIT 0").get(); }
-catch { db.exec("ALTER TABLE meetings ADD COLUMN meeting_time TEXT NOT NULL DEFAULT '7:00 PM'"); }
 
 // Piscataway Township 2026 Council Meeting Schedule (defined early for seedDemoData)
 const PISCATAWAY_2026_SCHEDULE: { date: string; time: string; type: "council" | "reorganization" }[] = [
@@ -158,14 +167,14 @@ export function ensureSeeded(): void {
 // --- Config ---
 
 export function getConfig(key: string): string | null {
-  const row = db.prepare("SELECT value FROM config WHERE key = ?").get(key) as
+  const row = getDb().prepare("SELECT value FROM config WHERE key = ?").get(key) as
     | { value: string }
     | undefined;
   return row?.value ?? null;
 }
 
 export function setConfig(key: string, value: string): void {
-  db.prepare(
+  getDb().prepare(
     "INSERT INTO config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).run(key, value);
 }
@@ -173,14 +182,14 @@ export function setConfig(key: string, value: string): void {
 // --- Processed emails ---
 
 export function isEmailProcessed(emailId: string): boolean {
-  const row = db
+  const row = getDb()
     .prepare("SELECT 1 FROM processed_emails WHERE email_id = ?")
     .get(emailId);
   return !!row;
 }
 
 export function markEmailProcessed(emailId: string): void {
-  db.prepare(
+  getDb().prepare(
     "INSERT OR IGNORE INTO processed_emails (email_id) VALUES (?)"
   ).run(emailId);
 }
@@ -197,7 +206,7 @@ export function createDocketEntry(params: {
   attachmentFilenames: string[];
 }): number {
   const { classification } = params;
-  const result = db
+  const result = getDb()
     .prepare(
       `INSERT INTO docket (
         email_id, email_from, email_subject, email_date, email_body_preview,
@@ -289,11 +298,11 @@ export function getDocketEntries(filters?: {
   const limit = filters?.limit ?? 50;
   const offset = filters?.offset ?? 0;
 
-  const total = db
+  const total = getDb()
     .prepare(`SELECT COUNT(*) as count FROM docket ${where}`)
     .get(...values) as { count: number };
 
-  const entries = db
+  const entries = getDb()
     .prepare(
       `SELECT * FROM docket ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
     )
@@ -303,14 +312,14 @@ export function getDocketEntries(filters?: {
 }
 
 export function getDocketEntry(id: number): DocketEntry | null {
-  const row = db.prepare("SELECT * FROM docket WHERE id = ?").get(id) as
+  const row = getDb().prepare("SELECT * FROM docket WHERE id = ?").get(id) as
     | DocketEntry
     | undefined;
   return row ?? null;
 }
 
 export function getDocketEntryByEmailId(emailId: string): DocketEntry | null {
-  const row = db.prepare("SELECT * FROM docket WHERE email_id = ?").get(emailId) as
+  const row = getDb().prepare("SELECT * FROM docket WHERE email_id = ?").get(emailId) as
     | DocketEntry
     | undefined;
   return row ?? null;
@@ -359,7 +368,7 @@ export function updateDocketEntry(
 
   sets.push("updated_at = datetime('now')");
 
-  db.prepare(`UPDATE docket SET ${sets.join(", ")} WHERE id = ?`).run(
+  getDb().prepare(`UPDATE docket SET ${sets.join(", ")} WHERE id = ?`).run(
     ...values,
     id
   );
@@ -371,7 +380,7 @@ export function insertDocketHistory(
   oldValue: string,
   newValue: string
 ): void {
-  db.prepare(
+  getDb().prepare(
     "INSERT INTO docket_history (docket_id, field_name, old_value, new_value) VALUES (?, ?, ?, ?)"
   ).run(docketId, fieldName, oldValue, newValue);
 }
@@ -384,7 +393,7 @@ export function getDocketHistory(docketId: number): {
   new_value: string;
   changed_at: string;
 }[] {
-  return db
+  return getDb()
     .prepare("SELECT * FROM docket_history WHERE docket_id = ? ORDER BY changed_at DESC")
     .all(docketId) as {
     id: number;
@@ -405,11 +414,11 @@ export function getDocketStats(): {
   by_type: { item_type: string; count: number }[];
   by_department: { department: string; count: number }[];
 } {
-  const total = db
+  const total = getDb()
     .prepare("SELECT COUNT(*) as count FROM docket WHERE relevant = 1")
     .get() as { count: number };
 
-  const statusCounts = db
+  const statusCounts = getDb()
     .prepare(
       "SELECT status, COUNT(*) as count FROM docket WHERE relevant = 1 GROUP BY status"
     )
@@ -420,13 +429,13 @@ export function getDocketStats(): {
     statusMap[row.status] = row.count;
   }
 
-  const byType = db
+  const byType = getDb()
     .prepare(
       "SELECT item_type, COUNT(*) as count FROM docket WHERE relevant = 1 AND item_type IS NOT NULL GROUP BY item_type ORDER BY count DESC"
     )
     .all() as { item_type: string; count: number }[];
 
-  const byDepartment = db
+  const byDepartment = getDb()
     .prepare(
       "SELECT department, COUNT(*) as count FROM docket WHERE relevant = 1 AND department IS NOT NULL GROUP BY department ORDER BY count DESC"
     )
@@ -446,11 +455,11 @@ export function getDocketStats(): {
 // --- Meetings ---
 
 export function ensureMeetingsGenerated(): void {
-  const insert = db.prepare(
+  const insert = getDb().prepare(
     `INSERT OR IGNORE INTO meetings (meeting_type, meeting_date, meeting_time, cycle_date) VALUES (?, ?, ?, ?)`
   );
 
-  const txn = db.transaction(() => {
+  const txn = getDb().transaction(() => {
     for (const mtg of PISCATAWAY_2026_SCHEDULE) {
       insert.run(mtg.type, mtg.date, mtg.time, mtg.date);
     }
@@ -478,12 +487,12 @@ export function getMeetings(filters?: {
   const limit = filters?.limit ?? 30;
   const offset = filters?.offset ?? 0;
 
-  const totalRow = db.prepare(
+  const totalRow = getDb().prepare(
     `SELECT COUNT(*) as count FROM meetings ${condition}`
   ).get(...values) as { count: number };
 
   const orderDir = filters?.filter === "past" ? "DESC" : "ASC";
-  const rows = db.prepare(
+  const rows = getDb().prepare(
     `SELECT * FROM meetings ${condition} ORDER BY meeting_date ${orderDir} LIMIT ? OFFSET ?`
   ).all(...values, limit, offset) as Meeting[];
 
@@ -491,19 +500,19 @@ export function getMeetings(filters?: {
 }
 
 export function getMeeting(id: number): Meeting | null {
-  const row = db.prepare("SELECT * FROM meetings WHERE id = ?").get(id) as Meeting | undefined;
+  const row = getDb().prepare("SELECT * FROM meetings WHERE id = ?").get(id) as Meeting | undefined;
   return row ?? null;
 }
 
 export function getMeetingByTypeAndDate(meetingType: string, meetingDate: string): Meeting | null {
-  const row = db.prepare(
+  const row = getDb().prepare(
     "SELECT * FROM meetings WHERE meeting_type = ? AND meeting_date = ?"
   ).get(meetingType, meetingDate) as Meeting | undefined;
   return row ?? null;
 }
 
 export function getMeetingsByDate(meetingDate: string): Meeting[] {
-  return db.prepare(
+  return getDb().prepare(
     "SELECT * FROM meetings WHERE meeting_date = ?"
   ).all(meetingDate) as Meeting[];
 }
@@ -535,7 +544,7 @@ export function updateMeeting(
   if (sets.length === 0) return;
   sets.push("updated_at = datetime('now')");
 
-  db.prepare(`UPDATE meetings SET ${sets.join(", ")} WHERE id = ?`).run(...values, id);
+  getDb().prepare(`UPDATE meetings SET ${sets.join(", ")} WHERE id = ?`).run(...values, id);
 }
 
 export function insertMinutesHistory(
@@ -543,7 +552,7 @@ export function insertMinutesHistory(
   oldValue: string,
   newValue: string
 ): void {
-  db.prepare(
+  getDb().prepare(
     "INSERT INTO minutes_history (meeting_id, old_value, new_value) VALUES (?, ?, ?)"
   ).run(meetingId, oldValue, newValue);
 }
@@ -555,7 +564,7 @@ export function getMinutesHistory(meetingId: number): {
   new_value: string;
   changed_at: string;
 }[] {
-  return db
+  return getDb()
     .prepare("SELECT * FROM minutes_history WHERE meeting_id = ? ORDER BY changed_at DESC")
     .all(meetingId) as {
     id: number;
@@ -567,7 +576,7 @@ export function getMinutesHistory(meetingId: number): {
 }
 
 export function getAgendaItemsForMeeting(meetingDate: string): DocketEntry[] {
-  return db.prepare(
+  return getDb().prepare(
     `SELECT * FROM docket WHERE target_meeting_date = ? AND status IN ('accepted', 'on_agenda') ORDER BY item_type, id`
   ).all(meetingDate) as DocketEntry[];
 }
@@ -575,7 +584,7 @@ export function getAgendaItemsForMeeting(meetingDate: string): DocketEntry[] {
 /** Find past meetings that have video_url but no minutes yet */
 export function getMeetingsNeedingMinutes(): Meeting[] {
   const today = new Date().toISOString().split("T")[0];
-  return db.prepare(`
+  return getDb().prepare(`
     SELECT * FROM meetings
     WHERE video_url IS NOT NULL
       AND (minutes IS NULL OR minutes = '')
@@ -587,7 +596,7 @@ export function getMeetingsNeedingMinutes(): Meeting[] {
 /** Find all past meetings with video URLs that have no minutes yet (no agenda item requirement) */
 export function getPastMeetingsWithoutMinutes(): Meeting[] {
   const today = new Date().toISOString().split("T")[0];
-  return db.prepare(`
+  return getDb().prepare(`
     SELECT * FROM meetings
     WHERE video_url IS NOT NULL
       AND (minutes IS NULL OR minutes = '')
@@ -599,7 +608,7 @@ export function getPastMeetingsWithoutMinutes(): Meeting[] {
 /** Find all past meetings that have no video URL yet */
 export function getPastMeetingsWithoutVideo(): Meeting[] {
   const today = new Date().toISOString().split("T")[0];
-  return db.prepare(`
+  return getDb().prepare(`
     SELECT * FROM meetings
     WHERE (video_url IS NULL OR video_url = '')
       AND meeting_date <= ?
@@ -618,7 +627,7 @@ export function getNextCouncilMeetingAfter(afterDate: string, minDaysAfter = 10)
   // Ensure meetings are generated
   ensureMeetingsGenerated();
 
-  const row = db.prepare(
+  const row = getDb().prepare(
     `SELECT * FROM meetings WHERE meeting_type = 'council' AND meeting_date >= ? ORDER BY meeting_date ASC LIMIT 1`
   ).get(earliestStr) as Meeting | undefined;
   return row ?? null;
@@ -627,7 +636,7 @@ export function getNextCouncilMeetingAfter(afterDate: string, minDaysAfter = 10)
 // --- Ordinance Tracking ---
 
 export function getOrdinanceTracking(docketId: number): OrdinanceTracking | null {
-  const row = db.prepare("SELECT * FROM ordinance_tracking WHERE docket_id = ?").get(docketId) as OrdinanceTracking | undefined;
+  const row = getDb().prepare("SELECT * FROM ordinance_tracking WHERE docket_id = ?").get(docketId) as OrdinanceTracking | undefined;
   return row ?? null;
 }
 
@@ -648,7 +657,7 @@ export function upsertOrdinanceTracking(
         vals.push(v as string | number | null);
       }
     }
-    db.prepare(`INSERT INTO ordinance_tracking (${cols.join(", ")}) VALUES (${placeholders.join(", ")})`).run(...vals);
+    getDb().prepare(`INSERT INTO ordinance_tracking (${cols.join(", ")}) VALUES (${placeholders.join(", ")})`).run(...vals);
   } else {
     // Update existing
     const sets: string[] = [];
@@ -661,12 +670,12 @@ export function upsertOrdinanceTracking(
     }
     if (sets.length === 0) return;
     sets.push("updated_at = datetime('now')");
-    db.prepare(`UPDATE ordinance_tracking SET ${sets.join(", ")} WHERE docket_id = ?`).run(...vals, docketId);
+    getDb().prepare(`UPDATE ordinance_tracking SET ${sets.join(", ")} WHERE docket_id = ?`).run(...vals, docketId);
   }
 }
 
 export function getAllOrdinancesWithTracking(): (DocketEntry & { tracking: OrdinanceTracking | null })[] {
-  const ordinances = db.prepare(`
+  const ordinances = getDb().prepare(`
     SELECT * FROM docket
     WHERE item_type IN ('ordinance_new', 'ordinance_amendment')
     ORDER BY created_at DESC
@@ -712,22 +721,22 @@ function seedDemoData() {
   ensureMeetingsGenerated();
 
   // Seed minutes for demo meetings (idempotent — only updates meetings with no minutes)
-  const seededMinutes = db.prepare("SELECT value FROM config WHERE key = 'seed_minutes_v3'").get() as { value: string } | undefined;
+  const seededMinutes = getDb().prepare("SELECT value FROM config WHERE key = 'seed_minutes_v3'").get() as { value: string } | undefined;
   if (!seededMinutes) {
-    db.prepare("INSERT INTO config (key, value) VALUES ('seed_minutes_v3', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+    getDb().prepare("INSERT INTO config (key, value) VALUES ('seed_minutes_v3', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
     for (const m of SEED_MINUTES) {
-      const meeting = db.prepare("SELECT id, minutes FROM meetings WHERE meeting_date = ? AND meeting_type = ?").get(m.meeting_date, m.meeting_type) as { id: number; minutes: string } | undefined;
+      const meeting = getDb().prepare("SELECT id, minutes FROM meetings WHERE meeting_date = ? AND meeting_type = ?").get(m.meeting_date, m.meeting_type) as { id: number; minutes: string } | undefined;
       if (meeting && !meeting.minutes) {
-        db.prepare("UPDATE meetings SET minutes = ?, video_url = ?, status = 'completed' WHERE id = ?").run(m.minutes, m.video_url, meeting.id);
+        getDb().prepare("UPDATE meetings SET minutes = ?, video_url = ?, status = 'completed' WHERE id = ?").run(m.minutes, m.video_url, meeting.id);
         console.log(`[seed] Seeded minutes for ${m.meeting_date} ${m.meeting_type}`);
       }
     }
   }
 
   // Mark general seed as done
-  const seeded = db.prepare("SELECT value FROM config WHERE key = 'seed_v1'").get() as { value: string } | undefined;
+  const seeded = getDb().prepare("SELECT value FROM config WHERE key = 'seed_v1'").get() as { value: string } | undefined;
   if (!seeded) {
-    db.prepare("INSERT INTO config (key, value) VALUES ('seed_v1', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+    getDb().prepare("INSERT INTO config (key, value) VALUES ('seed_v1', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
     console.log("[seed] Piscataway instance initialized");
   }
 }
@@ -993,7 +1002,7 @@ function seedDemoData() {
       {}, [], "new", null],
   ];
 
-  const stmt = db.prepare(`
+  const stmt = getDb().prepare(`
     INSERT OR IGNORE INTO docket (
       email_id, email_from, email_subject, email_date, email_body_preview,
       relevant, confidence, item_type, department, summary,
@@ -1002,9 +1011,9 @@ function seedDemoData() {
     ) VALUES (?, ?, ?, ?, ?, ?, 'high', ?, ?, ?, ?, '{}', ?, ?, '', ?)
   `);
 
-  const pStmt = db.prepare("INSERT OR IGNORE INTO processed_emails (email_id) VALUES (?)");
+  const pStmt = getDb().prepare("INSERT OR IGNORE INTO processed_emails (email_id) VALUES (?)");
 
-  const insertAll = db.transaction(() => {
+  const insertAll = getDb().transaction(() => {
     for (const [from, subject, date, body, relevant, itemType, dept, summary, fields, attachments, status, meetingDate] of rows) {
       const emailId = `seed-${date}-${subject.slice(0, 40).replace(/[^a-zA-Z0-9]/g, "-").toLowerCase()}`;
       stmt.run(emailId, from, subject, date, body, relevant, itemType, dept, summary,
@@ -1019,14 +1028,14 @@ function seedDemoData() {
   try {
     // Ensure meeting rows exist first
     ensureMeetingsGenerated();
-    const meetingInsert = db.prepare(
+    const meetingInsert = getDb().prepare(
       `INSERT OR IGNORE INTO meetings (meeting_type, meeting_date, meeting_time, cycle_date) VALUES (?, ?, ?, ?)`
     );
-    const meetingUpdate = db.prepare(`
+    const meetingUpdate = getDb().prepare(`
       UPDATE meetings SET video_url = ?, minutes = ?, status = 'completed'
       WHERE meeting_date = ? AND meeting_type = ?
     `);
-    const seedMeetings = db.transaction(() => {
+    const seedMeetings = getDb().transaction(() => {
       for (const m of SEED_MINUTES) {
         meetingInsert.run(m.meeting_type, m.meeting_date, "7:00 PM", m.meeting_date);
         meetingUpdate.run(m.video_url, m.minutes, m.meeting_date, m.meeting_type);
@@ -1042,14 +1051,14 @@ function seedDemoData() {
   const agendaUrls: { date: string; type: string; url: string }[] = [
     { date: "2026-02-10", type: "council", url: "https://cms9files.revize.com/piscatawaytownshipnj/Document_Center/Government/Meeting%20Information/Township%20Council/Agendas/2026/02.10.26%20Council%20meeting%20agenda.pdf" },
   ];
-  const agendaUpdate = db.prepare(`UPDATE meetings SET agenda_url = ? WHERE meeting_date = ? AND meeting_type = ?`);
+  const agendaUpdate = getDb().prepare(`UPDATE meetings SET agenda_url = ? WHERE meeting_date = ? AND meeting_type = ?`);
   for (const a of agendaUrls) {
     agendaUpdate.run(a.url, a.date, a.type);
   }
 
   // Seed ordinance tracking data
   try {
-    const ordUpsert = db.prepare(`
+    const ordUpsert = getDb().prepare(`
       INSERT INTO ordinance_tracking (docket_id, ordinance_number, introduction_date, hearing_date, hearing_amended, hearing_notes, adoption_date, adoption_vote, adoption_failed, clerk_notes)
       SELECT d.id, ?, ?, ?, ?, ?, ?, ?, ?, ?
       FROM docket d WHERE d.email_id = ?
@@ -1064,7 +1073,7 @@ function seedDemoData() {
         adoption_failed = excluded.adoption_failed,
         clerk_notes = excluded.clerk_notes
     `);
-    const seedOrdinances = db.transaction(() => {
+    const seedOrdinances = getDb().transaction(() => {
       for (const o of SEED_ORDINANCE_TRACKING) {
         ordUpsert.run(
           o.ordinance_number, o.introduction_date, o.hearing_date,
@@ -1079,6 +1088,6 @@ function seedDemoData() {
     console.warn("[seed] Could not seed ordinance tracking:", e);
   }
 
-  db.prepare("INSERT INTO config (key, value) VALUES ('seed_v1', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+  getDb().prepare("INSERT INTO config (key, value) VALUES ('seed_v1', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
   console.log(`[seed] Inserted ${rows.length} demo docket entries`);
 */
