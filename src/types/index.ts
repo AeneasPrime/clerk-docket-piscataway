@@ -70,7 +70,7 @@ export interface CompletenessCheck {
 
 export interface ClassificationResult {
   relevant: boolean;
-  confidence: "high" | "medium" | "low";
+  confidence: "high" | "medium" | "low" | "pending";
   item_type: ItemType | null;
   department: string | null;
   summary: string;

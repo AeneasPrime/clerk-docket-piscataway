@@ -1,9 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { processSingleEmail } from "@/lib/scanner";
-import type { RawAttachment } from "@/types";
-
-// Allow long-running classification (up to 5 minutes)
-export const maxDuration = 300;
+import { quickSaveEmail } from "@/lib/scanner";
 
 export async function POST(request: NextRequest) {
   // Validate API key
@@ -51,33 +47,24 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Decode base64 attachments into RawAttachment[]
-  const attachments: RawAttachment[] = [];
+  // Extract attachment filenames (don't decode full binary — not needed for quick-save)
+  const attachmentFilenames: string[] = [];
   if (body.attachments) {
     for (const att of body.attachments) {
-      try {
-        const buffer = Buffer.from(att.data, "base64");
-        attachments.push({
-          filename: att.filename,
-          mimeType: att.mimeType,
-          size: buffer.length,
-          data: buffer,
-        });
-      } catch {
-        // Skip malformed attachments
-      }
+      attachmentFilenames.push(att.filename);
     }
   }
 
   try {
-    const result = await processSingleEmail({
+    // Quick-save: creates docket entry immediately, defers AI classification to cron
+    const result = quickSaveEmail({
       id: body.emailId,
       from: body.from,
       subject: body.subject,
       date: body.date,
       bodyText: body.bodyText,
       bodyHtml: body.bodyHtml,
-      attachments,
+      attachmentFilenames,
     });
 
     return NextResponse.json({ success: true, ...result });

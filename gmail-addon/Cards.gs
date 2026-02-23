@@ -3,12 +3,32 @@
  */
 
 /**
- * Main card — just a single button.
+ * Main card — shows email info and "Add to Docket" button.
+ * Displayed instantly on email open (no server call).
  */
-function buildMainCard(messageId) {
+function buildMainCard(messageId, subject, from) {
   var card = CardService.newCardBuilder();
+  card.setHeader(
+    CardService.newCardHeader()
+      .setTitle("Send to Docket")
+      .setSubtitle("Clerk Docket — Piscataway")
+  );
 
   var section = CardService.newCardSection();
+
+  section.addWidget(
+    CardService.newDecoratedText()
+      .setTopLabel("From")
+      .setText(from || "Unknown")
+      .setWrapText(true)
+  );
+
+  section.addWidget(
+    CardService.newDecoratedText()
+      .setTopLabel("Subject")
+      .setText(subject || "(no subject)")
+      .setWrapText(true)
+  );
 
   var action = CardService.newAction()
     .setFunctionName("onSendToDocket")
@@ -49,6 +69,12 @@ function buildSuccessCard(result) {
       CardService.newDecoratedText()
         .setTopLabel("Department")
         .setText(result.classification.department || "Unknown")
+    );
+  } else if (result.status === "pending_classification") {
+    section.addWidget(
+      CardService.newDecoratedText()
+        .setText("Email saved. Classification will complete shortly.")
+        .setWrapText(true)
     );
   }
 

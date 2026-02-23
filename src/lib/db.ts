@@ -325,6 +325,36 @@ export function getDocketEntryByEmailId(emailId: string): DocketEntry | null {
   return row ?? null;
 }
 
+/** Get docket entries with confidence = 'pending' that need AI classification */
+export function getPendingClassificationEntries(): DocketEntry[] {
+  return getDb().prepare(
+    "SELECT * FROM docket WHERE confidence = 'pending' ORDER BY created_at ASC LIMIT 10"
+  ).all() as DocketEntry[];
+}
+
+/** Update the classification fields on a docket entry after deferred AI classification */
+export function updateDocketClassification(
+  id: number,
+  classification: ClassificationResult
+): void {
+  getDb().prepare(`
+    UPDATE docket SET
+      relevant = ?, confidence = ?, item_type = ?, department = ?,
+      summary = ?, extracted_fields = ?, completeness = ?,
+      updated_at = datetime('now')
+    WHERE id = ?
+  `).run(
+    classification.relevant ? 1 : 0,
+    classification.confidence,
+    classification.item_type,
+    classification.department,
+    classification.summary,
+    JSON.stringify(classification.extracted_fields),
+    JSON.stringify(classification.completeness),
+    id
+  );
+}
+
 export function updateDocketEntry(
   id: number,
   updates: {
