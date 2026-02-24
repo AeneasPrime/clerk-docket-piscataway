@@ -17,28 +17,11 @@ function getConfig() {
 
 /**
  * Contextual trigger: fires when user opens an email.
- * Shows a lightweight card instantly — no server call.
+ * Returns a minimal card as fast as possible — no API calls at all.
  */
 function onGmailMessageOpen(e) {
   var messageId = e.gmail.messageId;
-  var accessToken = e.gmail.accessToken;
-
-  GmailApp.setCurrentMessageAccessToken(accessToken);
-  var message = GmailApp.getMessageById(messageId);
-
-  if (!message) {
-    return buildErrorCard("Could not read this email.");
-  }
-
-  // Check if already sent (local cache to avoid redundant sends)
-  var cache = CacheService.getUserCache();
-  var cached = cache.get("docket_" + messageId);
-  if (cached) {
-    var data = JSON.parse(cached);
-    return buildAlreadyProcessedCard(data);
-  }
-
-  return buildMainCard(messageId, message.getSubject(), message.getFrom());
+  return buildMainCard(messageId);
 }
 
 /**

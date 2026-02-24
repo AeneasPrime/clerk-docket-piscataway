@@ -3,10 +3,10 @@
  */
 
 /**
- * Main card — shows email info and "Add to Docket" button.
- * Displayed instantly on email open (no server call).
+ * Main card — just an "Add to Docket" button.
+ * Minimal work so it appears as fast as possible.
  */
-function buildMainCard(messageId, subject, from) {
+function buildMainCard(messageId) {
   var card = CardService.newCardBuilder();
   card.setHeader(
     CardService.newCardHeader()
@@ -15,20 +15,6 @@ function buildMainCard(messageId, subject, from) {
   );
 
   var section = CardService.newCardSection();
-
-  section.addWidget(
-    CardService.newDecoratedText()
-      .setTopLabel("From")
-      .setText(from || "Unknown")
-      .setWrapText(true)
-  );
-
-  section.addWidget(
-    CardService.newDecoratedText()
-      .setTopLabel("Subject")
-      .setText(subject || "(no subject)")
-      .setWrapText(true)
-  );
 
   var action = CardService.newAction()
     .setFunctionName("onSendToDocket")
