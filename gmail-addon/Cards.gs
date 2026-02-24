@@ -3,7 +3,7 @@
  */
 
 /**
- * Instant confirmation card — shown immediately when the add-on panel opens.
+ * Confirmation card — email was added to the docket.
  */
 function buildAddedCard() {
   var card = CardService.newCardBuilder();
@@ -16,7 +16,29 @@ function buildAddedCard() {
   var section = CardService.newCardSection();
   section.addWidget(
     CardService.newDecoratedText()
-      .setText("This email has been queued for the docket.")
+      .setText("This email has been added to the docket.")
+      .setWrapText(true)
+  );
+
+  card.addSection(section);
+  return card.build();
+}
+
+/**
+ * Card shown when the email was already in the docket.
+ */
+function buildAlreadyAddedCard() {
+  var card = CardService.newCardBuilder();
+  card.setHeader(
+    CardService.newCardHeader()
+      .setTitle("Already in Docket")
+      .setSubtitle("Clerk Docket — Piscataway")
+  );
+
+  var section = CardService.newCardSection();
+  section.addWidget(
+    CardService.newDecoratedText()
+      .setText("This email has already been sent to the docket.")
       .setWrapText(true)
   );
 
