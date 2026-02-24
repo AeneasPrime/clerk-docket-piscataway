@@ -42,21 +42,13 @@ function onGmailMessageOpen(e) {
     subject: message.getSubject(),
     date: message.getDate().toISOString(),
     bodyText: message.getPlainBody() || "",
-    bodyHtml: message.getBody() || "",
     attachments: []
   };
 
+  // Only send filenames — skip base64 encoding to keep the request fast
   var attachments = message.getAttachments();
   for (var i = 0; i < attachments.length; i++) {
-    var att = attachments[i];
-    var bytes = att.getBytes();
-    if (bytes.length > MAX_ATTACHMENT_BYTES) continue;
-
-    payload.attachments.push({
-      filename: att.getName(),
-      mimeType: att.getContentType(),
-      data: Utilities.base64Encode(bytes)
-    });
+    payload.attachments.push({ filename: attachments[i].getName() });
   }
 
   try {
