@@ -1,8 +1,9 @@
 /**
  * Send to Docket — Google Workspace Add-on for Gmail
  *
- * Click the add-on icon on any email to see the "Add to Docket" button.
- * Click the button to send the email to the docket for classification.
+ * Opening an email with the add-on panel visible instantly shows
+ * "Added to Docket". The actual send happens in the background
+ * via a time-driven trigger (fires within ~1 minute).
  */
 
 var MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024; // 10 MB per attachment
@@ -17,83 +18,128 @@ function getConfig() {
 
 /**
  * Contextual trigger: fires when user opens an email.
- * Returns a minimal card as fast as possible — no API calls at all.
+ * Queues the email for background processing and returns
+ * an "Added to Docket" card immediately — no GmailApp or server calls.
  */
 function onGmailMessageOpen(e) {
   var messageId = e.gmail.messageId;
-  return buildMainCard(messageId);
+
+  // Queue for background send (UserProperties is fast — no network call)
+  var props = PropertiesService.getUserProperties();
+  var queue = JSON.parse(props.getProperty("DOCKET_QUEUE") || "[]");
+
+  // Check if already queued or processed
+  var dominated = false;
+  for (var i = 0; i < queue.length; i++) {
+    if (queue[i] === messageId) { dominated = true; break; }
+  }
+
+  if (!dominated) {
+    queue.push(messageId);
+    props.setProperty("DOCKET_QUEUE", JSON.stringify(queue));
+    ensureProcessTrigger();
+  }
+
+  return buildAddedCard();
 }
 
 /**
- * Action handler: user clicked "Add to Docket" button.
- * Sends the email to the server.
+ * Ensure a time-driven trigger exists to process the queue.
+ * Creates one that fires after ~1 second (actual delay is up to ~1 min).
  */
-function onSendToDocket(e) {
-  var messageId = e.parameters.messageId;
+function ensureProcessTrigger() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === "processQueue") return;
+  }
+  ScriptApp.newTrigger("processQueue").timeBased().after(1000).create();
+}
+
+/**
+ * Background handler: reads queued messageIds, fetches email content,
+ * and sends each to the docket ingest API.
+ */
+function processQueue() {
+  var props = PropertiesService.getUserProperties();
+  var queue = JSON.parse(props.getProperty("DOCKET_QUEUE") || "[]");
+
+  if (queue.length === 0) {
+    cleanupTrigger();
+    return;
+  }
+
   var config = getConfig();
-
   if (!config.apiKey) {
-    return buildErrorCard("INGEST_API_KEY not set. Go to Script Properties to configure it.");
+    Logger.log("INGEST_API_KEY not set — skipping queue processing.");
+    cleanupTrigger();
+    return;
   }
 
-  var accessToken = e.gmail.accessToken;
-  GmailApp.setCurrentMessageAccessToken(accessToken);
-  var message = GmailApp.getMessageById(messageId);
+  var remaining = [];
 
-  if (!message) {
-    return buildErrorCard("Could not read this email.");
-  }
+  for (var i = 0; i < queue.length; i++) {
+    var messageId = queue[i];
+    try {
+      var message = GmailApp.getMessageById(messageId);
+      if (!message) continue; // skip unreadable
 
-  var payload = {
-    emailId: messageId,
-    from: message.getFrom(),
-    subject: message.getSubject(),
-    date: message.getDate().toISOString(),
-    bodyText: message.getPlainBody() || "",
-    bodyHtml: message.getBody() || "",
-    attachments: []
-  };
+      var payload = {
+        emailId: messageId,
+        from: message.getFrom(),
+        subject: message.getSubject(),
+        date: message.getDate().toISOString(),
+        bodyText: message.getPlainBody() || "",
+        bodyHtml: message.getBody() || "",
+        attachments: []
+      };
 
-  var attachments = message.getAttachments();
-  for (var i = 0; i < attachments.length; i++) {
-    var att = attachments[i];
-    var bytes = att.getBytes();
-    if (bytes.length > MAX_ATTACHMENT_BYTES) continue;
+      var attachments = message.getAttachments();
+      for (var j = 0; j < attachments.length; j++) {
+        var att = attachments[j];
+        var bytes = att.getBytes();
+        if (bytes.length > MAX_ATTACHMENT_BYTES) continue;
 
-    payload.attachments.push({
-      filename: att.getName(),
-      mimeType: att.getContentType(),
-      data: Utilities.base64Encode(bytes)
-    });
-  }
+        payload.attachments.push({
+          filename: att.getName(),
+          mimeType: att.getContentType(),
+          data: Utilities.base64Encode(bytes)
+        });
+      }
 
-  try {
-    var response = UrlFetchApp.fetch(config.apiUrl, {
-      method: "post",
-      contentType: "application/json",
-      headers: {
-        "Authorization": "Bearer " + config.apiKey
-      },
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    });
+      var response = UrlFetchApp.fetch(config.apiUrl, {
+        method: "post",
+        contentType: "application/json",
+        headers: { "Authorization": "Bearer " + config.apiKey },
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true
+      });
 
-    var code = response.getResponseCode();
-    var body = JSON.parse(response.getContentText());
-
-    if (code === 200 && body.success) {
-      // Cache the result so re-opening this email shows "already processed"
-      var cache = CacheService.getUserCache();
-      cache.put("docket_" + messageId, JSON.stringify({ docketId: body.docketId }), 86400);
-      return buildSuccessCard(body);
-    } else if (code === 409) {
-      var cache = CacheService.getUserCache();
-      cache.put("docket_" + messageId, JSON.stringify({ docketId: body.docketId }), 86400);
-      return buildAlreadyProcessedCard(body);
-    } else {
-      return buildErrorCard(body.message || "Server error: " + code);
+      var code = response.getResponseCode();
+      if (code === 200 || code === 409) {
+        // Success or already processed — done
+        Logger.log("Docket: sent " + messageId + " (HTTP " + code + ")");
+      } else {
+        Logger.log("Docket: server error for " + messageId + " (HTTP " + code + ")");
+        remaining.push(messageId); // retry next time
+      }
+    } catch (err) {
+      Logger.log("Docket: error processing " + messageId + ": " + err.message);
+      remaining.push(messageId); // retry next time
     }
-  } catch (err) {
-    return buildErrorCard("Network error: " + err.message);
+  }
+
+  props.setProperty("DOCKET_QUEUE", JSON.stringify(remaining));
+  cleanupTrigger();
+}
+
+/**
+ * Remove the processQueue time trigger so it doesn't keep firing.
+ */
+function cleanupTrigger() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === "processQueue") {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
   }
 }
