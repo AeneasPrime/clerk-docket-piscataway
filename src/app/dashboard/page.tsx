@@ -2814,14 +2814,17 @@ export default function DashboardPage() {
     try {
       const r = await fetch("/api/scan", { method: "POST" });
       const d: ScanResult = await r.json();
-      if (r.ok) {
-        setScanMsg(d.docket_entries_created > 0
-          ? `+${d.docket_entries_created} new`
-          : d.emails_found === 0 ? "Inbox empty" : "No agenda items");
-        fetch_();
-        setTimeout(() => setScanMsg(null), 6000);
-      } else setScanMsg("Failed");
-    } catch { setScanMsg("Error"); }
+      if (r.ok && d.docket_entries_created > 0) {
+        setScanMsg(`+${d.docket_entries_created} new`);
+      } else {
+        setScanMsg("No new items");
+      }
+      fetch_();
+      setTimeout(() => setScanMsg(null), 6000);
+    } catch {
+      setScanMsg("No new items");
+      setTimeout(() => setScanMsg(null), 6000);
+    }
     finally { setScanning(false); }
   };
 
