@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDocketEntry, getOrdinanceTracking, upsertOrdinanceTracking } from "@/lib/db";
 
+export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   const id = parseInt(request.nextUrl.searchParams.get("id") ?? "", 10);
   if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });

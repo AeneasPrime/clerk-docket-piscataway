@@ -3,6 +3,7 @@ import { ensureMeetingsGenerated, ensureSeeded, getMeetings } from "@/lib/db";
 import { syncVideosFromYouTube } from "@/lib/video-sync";
 import { checkPendingMinutesGeneration } from "@/lib/minutes-generator";
 
+export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   try {
     ensureSeeded();

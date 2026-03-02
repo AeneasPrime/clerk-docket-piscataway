@@ -3,6 +3,7 @@ import { getPastMeetingsWithoutMinutes, getAgendaItemsForMeeting, updateMeeting 
 import { syncVideosFromYouTube } from "@/lib/video-sync";
 import { fetchTranscriptData, generateMinutes, analyzeOrdinanceOutcomes } from "@/lib/minutes-generator";
 
+export const dynamic = "force-dynamic";
 // Allow long-running batch generation (up to 10 minutes)
 export const maxDuration = 600;
 

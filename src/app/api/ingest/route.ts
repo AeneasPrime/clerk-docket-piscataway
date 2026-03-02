@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { quickSaveEmail } from "@/lib/scanner";
 
+export const dynamic = "force-dynamic";
 export async function POST(request: NextRequest) {
   // Validate API key
   const apiKey = process.env.INGEST_API_KEY;

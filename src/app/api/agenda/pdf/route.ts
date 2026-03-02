@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDocketEntries } from "@/lib/db";
 import { generateAgendaPDF } from "@/lib/agenda-pdf";
 
+export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   try {
     const url = request.nextUrl;

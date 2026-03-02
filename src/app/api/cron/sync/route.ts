@@ -4,6 +4,7 @@ import { syncVideosFromYouTube } from "@/lib/video-sync";
 import { checkPendingMinutesGeneration } from "@/lib/minutes-generator";
 import { classifyPendingEntries } from "@/lib/scanner";
 
+export const dynamic = "force-dynamic";
 /**
  * Cron endpoint — call daily to auto-discover YouTube videos and generate minutes.
  * Secured with CRON_SECRET env var. If not set, the endpoint is open (for easy local testing).

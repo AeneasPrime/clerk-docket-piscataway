@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { runScan } from "@/lib/scanner";
 
+export const dynamic = "force-dynamic";
 async function handleScan() {
   try {
     const result = await runScan();

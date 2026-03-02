@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDocketEntry, updateDocketEntry, getMeetingsByDate, insertDocketHistory, getDocketHistory, getOrdinanceTracking, upsertOrdinanceTracking, getNextCouncilMeetingAfter } from "@/lib/db";
 import { maybeAutoGenerateMinutes } from "@/lib/minutes-generator";
 
+export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   const idParam = request.nextUrl.searchParams.get("id");
 

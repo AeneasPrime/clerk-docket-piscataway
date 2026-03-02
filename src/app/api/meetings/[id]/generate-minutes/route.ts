@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getMeeting, getAgendaItemsForMeeting, updateMeeting } from "@/lib/db";
 import { fetchTranscriptData, fetchWhisperTranscript, generateMinutes, analyzeOrdinanceOutcomes, type TranscriptSource } from "@/lib/minutes-generator";
 
+export const dynamic = "force-dynamic";
 // Allow long-running minutes generation (up to 10 minutes)
 export const maxDuration = 600;
 

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { fetchEmailThread } from "@/lib/gmail";
 import { getDocketEntryByEmailId } from "@/lib/db";
 
+export const dynamic = "force-dynamic";
 /** Generate a realistic email body from seed docket data */
 function generateSeedEmailBody(entry: {
   email_from: string;

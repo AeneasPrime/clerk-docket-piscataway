@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getMeeting, getAgendaItemsForMeeting } from "@/lib/db";
 import { generateAgendaPDF } from "@/lib/agenda-pdf";
 
+export const dynamic = "force-dynamic";
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
