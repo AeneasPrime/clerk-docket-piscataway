@@ -3,8 +3,8 @@ services:
     name: clerk-docket-piscataway
     runtime: node
     plan: starter
-    buildCommand: pip install yt-dlp && which yt-dlp && yt-dlp --version && npm ci && npm run build && cp -r public .next/standalone/public && cp -r .next/static .next/standalone/.next/static
-    startCommand: export PATH="$HOME/.local/bin:$PATH" && node .next/standalone/server.js
+    buildCommand: npm ci && npm run build && cp -r public .next/standalone/public && cp -r .next/static .next/standalone/.next/static
+    startCommand: node .next/standalone/server.js
     envVars:
       - key: NODE_ENV
         value: production

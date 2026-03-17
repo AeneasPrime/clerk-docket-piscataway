@@ -1,10 +1,4 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { exec } from "child_process";
-import { promisify } from "util";
-const execAsync = promisify(exec);
-import { existsSync, unlinkSync } from "fs";
-import path from "path";
-import os from "os";
 import type { DocketEntry } from "@/types";
 import { getMeeting, getAgendaItemsForMeeting, updateMeeting, getMeetingsNeedingMinutes, getOrdinanceTracking, upsertOrdinanceTracking, getNextCouncilMeetingAfter } from "./db";
 
@@ -32,97 +26,127 @@ function extractVideoId(videoUrl: string): string | null {
   return match ? match[1] : null;
 }
 
+// YouTube innertube API constants
+const YT_INNERTUBE_URL = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
+const YT_CLIENT_VERSION = "20.10.38";
+const YT_ANDROID_UA = `com.google.android.youtube/${YT_CLIENT_VERSION} (Linux; U; Android 14)`;
+const YT_WEB_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36";
+
 /**
- * Try to fetch YouTube's auto-generated captions via yt-dlp.
- * Returns the transcript text or null if unavailable.
+ * Fetch YouTube auto-captions via the innertube API (pure HTTP, no yt-dlp needed).
  */
-async function fetchYouTubeCaptions(videoUrl: string): Promise<string | null> {
-  const videoId = extractVideoId(videoUrl);
-  if (!videoId) return null;
-
-  const tmpDir = os.tmpdir();
-  const subtitleBase = path.join(tmpDir, `piscataway-captions-${videoId}`);
-
+async function fetchYouTubeCaptions(videoId: string): Promise<string | null> {
   try {
-    // Download auto-generated English captions using yt-dlp
-    try {
-      const { stderr } = await execAsync(
-        `yt-dlp --write-auto-sub --sub-lang en --sub-format vtt --skip-download ` +
-        `--output "${subtitleBase}" "${videoUrl}"`,
-        { timeout: 30000 }
-      );
-      if (stderr) console.log(`[yt-dlp] stderr: ${stderr.slice(0, 500)}`);
-    } catch (cmdErr) {
-      const msg = cmdErr instanceof Error ? cmdErr.message : String(cmdErr);
-      console.error(`[yt-dlp] Command failed: ${msg.slice(0, 500)}`);
+    // Step 1: Get caption track URLs via innertube player API
+    console.log(`[captions] Fetching caption tracks for video ${videoId}`);
+    const playerRes = await fetch(YT_INNERTUBE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "User-Agent": YT_ANDROID_UA },
+      body: JSON.stringify({
+        context: { client: { clientName: "ANDROID", clientVersion: YT_CLIENT_VERSION } },
+        videoId,
+      }),
+    });
+
+    if (!playerRes.ok) {
+      console.error(`[captions] Innertube API returned ${playerRes.status}`);
       return null;
     }
 
-    // yt-dlp creates files like: <base>.en.vtt
-    const vttPath = `${subtitleBase}.en.vtt`;
-    if (!existsSync(vttPath)) {
-      console.log(`[yt-dlp] No VTT file produced at ${vttPath}`);
+    const playerData = await playerRes.json();
+    const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    if (!Array.isArray(tracks) || tracks.length === 0) {
+      console.log(`[captions] No caption tracks found for ${videoId}`);
       return null;
     }
 
-    const vtt = await import("fs").then(fs => fs.readFileSync(vttPath, "utf-8"));
+    // Find English caption track
+    const enTrack = tracks.find((t: { languageCode: string }) => t.languageCode === "en");
+    if (!enTrack?.baseUrl) {
+      console.log(`[captions] No English caption track. Available: ${tracks.map((t: { languageCode: string }) => t.languageCode).join(", ")}`);
+      return null;
+    }
 
-    // Parse VTT → plain text with periodic timestamp markers (every ~60 seconds)
-    const lines = vtt.split("\n");
+    // Step 2: Fetch the transcript XML
+    const captionRes = await fetch(enTrack.baseUrl, {
+      headers: { "User-Agent": YT_WEB_UA },
+    });
+    if (!captionRes.ok) {
+      console.error(`[captions] Caption fetch returned ${captionRes.status}`);
+      return null;
+    }
+    const xml = await captionRes.text();
+    if (!xml || xml.length < 100) {
+      console.log(`[captions] Caption response too short (${xml.length} chars)`);
+      return null;
+    }
+
+    // Step 3: Parse XML → plain text with periodic timestamp markers
+    // Format: <p t="12028" d="3370">caption text</p> (milliseconds)
+    const segmentRegex = /<p t="(\d+)" d="\d+"[^>]*>([\s\S]*?)<\/p>/g;
     let transcript = "";
-    let lastText = "";
-    let lastTimestampSecs = -60; // force first timestamp to appear
-    let currentTimestamp = "";
+    let lastTimestampSecs = -60;
+    let segMatch;
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed === "WEBVTT" || /^\d+$/.test(trimmed) || trimmed.startsWith("Kind:") || trimmed.startsWith("Language:")) continue;
+    while ((segMatch = segmentRegex.exec(xml)) !== null) {
+      const startMs = parseInt(segMatch[1], 10);
+      const startSecs = startMs / 1000;
+      // Extract text from <s> tags or fall back to raw content
+      let text = "";
+      const sTagRegex = /<s[^>]*>([^<]*)<\/s>/g;
+      let sMatch;
+      while ((sMatch = sTagRegex.exec(segMatch[2])) !== null) {
+        text += sMatch[1];
+      }
+      if (!text) {
+        text = segMatch[2].replace(/<[^>]+>/g, "");
+      }
+      // Decode HTML entities
+      text = text
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&#39;/g, "'")
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .trim();
 
-      // Parse timestamp lines like "00:01:23.456 --> 00:01:26.789"
-      const tsMatch = trimmed.match(/^(\d{2}):(\d{2}):(\d{2})\.\d+\s*-->/);
-      if (tsMatch) {
-        const h = parseInt(tsMatch[1]), m = parseInt(tsMatch[2]), s = parseInt(tsMatch[3]);
-        const totalSecs = h * 3600 + m * 60 + s;
-        // Insert timestamp marker every ~60 seconds (don't clear pending unused timestamps)
-        if (totalSecs - lastTimestampSecs >= 60) {
-          const display = h > 0 ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
-          currentTimestamp = `[${display}] `;
-          lastTimestampSecs = totalSecs;
-        }
-        continue;
+      if (!text) continue;
+
+      // Add timestamp marker every ~60 seconds
+      if (startSecs - lastTimestampSecs >= 60) {
+        const totalSecs = Math.floor(startSecs);
+        const h = Math.floor(totalSecs / 3600);
+        const m = Math.floor((totalSecs % 3600) / 60);
+        const s = totalSecs % 60;
+        const display = h > 0
+          ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+          : `${m}:${String(s).padStart(2, "0")}`;
+        transcript += `[${display}] `;
+        lastTimestampSecs = startSecs;
       }
 
-      // Skip other non-text lines
-      if (trimmed.includes("-->")) continue;
-
-      // Clean HTML tags from caption text
-      const clean = trimmed.replace(/<[^>]+>/g, "").trim();
-      if (clean && clean !== lastText) {
-        transcript += currentTimestamp + clean + "\n";
-        currentTimestamp = ""; // only prepend timestamp to first line after a new cue
-        lastText = clean;
-      }
+      transcript += text + "\n";
     }
 
-    // Clean up temp file
-    try { unlinkSync(vttPath); } catch {}
-
-    return transcript.trim() || null;
+    const result = transcript.trim();
+    console.log(`[captions] Got ${result.length} chars of transcript for ${videoId}`);
+    return result || null;
   } catch (err) {
-    console.error(`[yt-dlp] Unexpected error:`, err instanceof Error ? err.message : err);
+    console.error(`[captions] Error:`, err instanceof Error ? err.message : err);
     return null;
   }
 }
 
 /**
- * Fetch transcript from YouTube video using auto-captions via yt-dlp.
- * yt-dlp is the only reliable way to fetch YouTube auto-captions server-side.
+ * Fetch transcript from YouTube video using auto-captions.
+ * Uses YouTube's innertube API — pure HTTP, no external dependencies.
  */
 export async function fetchTranscriptData(videoUrl: string): Promise<TranscriptData> {
   const videoId = extractVideoId(videoUrl);
   if (!videoId) throw new Error(`Cannot extract video ID from URL: ${videoUrl}`);
 
-  const captions = await fetchYouTubeCaptions(videoUrl);
+  const captions = await fetchYouTubeCaptions(videoId);
   if (captions && captions.length > 500) {
     return {
       transcript: captions,
@@ -134,7 +158,7 @@ export async function fetchTranscriptData(videoUrl: string): Promise<TranscriptD
 
   throw new Error(
     `No YouTube auto-captions available for video ${videoId}. ` +
-    `Ensure yt-dlp is installed and in PATH. Check logs for [yt-dlp] errors.`
+    `Check logs for [captions] errors.`
   );
 }
 
