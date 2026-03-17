@@ -3,7 +3,7 @@ services:
     name: clerk-docket-piscataway
     runtime: node
     plan: starter
-    buildCommand: npm ci && npm run build && cp -r public .next/standalone/public && cp -r .next/static .next/standalone/.next/static
+    buildCommand: pip install yt-dlp && npm ci && npm run build && cp -r public .next/standalone/public && cp -r .next/static .next/standalone/.next/static
     startCommand: node .next/standalone/server.js
     envVars:
       - key: NODE_ENV
@@ -25,6 +25,8 @@ services:
       - key: LOGIN_PASSWORD
         sync: false
       - key: INGEST_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
         sync: false
       - key: CRON_SECRET
         sync: false
