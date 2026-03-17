@@ -41,5 +41,18 @@ export async function register() {
       console.log("[auto-sync] Running scheduled sync...");
       runSync();
     }, SYNC_INTERVAL_MS);
+
+    // Graceful shutdown — close SQLite so Render can deploy cleanly
+    const shutdown = async () => {
+      console.log("[shutdown] Closing database...");
+      try {
+        const { closeDb } = await import("@/lib/db");
+        closeDb();
+      } catch { /* db may not have been initialized */ }
+      console.log("[shutdown] Done.");
+      process.exit(0);
+    };
+    process.on("SIGTERM", shutdown);
+    process.on("SIGINT", shutdown);
   }
 }

@@ -156,6 +156,14 @@ const PISCATAWAY_2026_SCHEDULE: { date: string; time: string; type: "council" | 
   { date: "2026-12-15", time: "7:00 PM", type: "council" },
 ];
 
+// --- Close database (for graceful shutdown) ---
+export function closeDb(): void {
+  if (_db) {
+    _db.close();
+    _db = null;
+  }
+}
+
 // --- Seed demo data (runs lazily on first API call, not during build) ---
 let _seeded = false;
 export function ensureSeeded(): void {
