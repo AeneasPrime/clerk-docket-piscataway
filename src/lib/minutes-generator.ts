@@ -45,15 +45,25 @@ async function fetchYouTubeCaptions(videoUrl: string): Promise<string | null> {
 
   try {
     // Download auto-generated English captions using yt-dlp
-    await execAsync(
-      `yt-dlp --write-auto-sub --sub-lang en --sub-format vtt --skip-download ` +
-      `--output "${subtitleBase}" "${videoUrl}" 2>/dev/null`,
-      { timeout: 30000 }
-    );
+    try {
+      const { stderr } = await execAsync(
+        `yt-dlp --write-auto-sub --sub-lang en --sub-format vtt --skip-download ` +
+        `--output "${subtitleBase}" "${videoUrl}"`,
+        { timeout: 30000 }
+      );
+      if (stderr) console.log(`[yt-dlp] stderr: ${stderr.slice(0, 500)}`);
+    } catch (cmdErr) {
+      const msg = cmdErr instanceof Error ? cmdErr.message : String(cmdErr);
+      console.error(`[yt-dlp] Command failed: ${msg.slice(0, 500)}`);
+      return null;
+    }
 
     // yt-dlp creates files like: <base>.en.vtt
     const vttPath = `${subtitleBase}.en.vtt`;
-    if (!existsSync(vttPath)) return null;
+    if (!existsSync(vttPath)) {
+      console.log(`[yt-dlp] No VTT file produced at ${vttPath}`);
+      return null;
+    }
 
     const vtt = await import("fs").then(fs => fs.readFileSync(vttPath, "utf-8"));
 
@@ -98,22 +108,110 @@ async function fetchYouTubeCaptions(videoUrl: string): Promise<string | null> {
     try { unlinkSync(vttPath); } catch {}
 
     return transcript.trim() || null;
-  } catch {
+  } catch (err) {
+    console.error(`[yt-dlp] Unexpected error:`, err instanceof Error ? err.message : err);
     return null;
   }
 }
 
 /**
- * Fetch transcript from YouTube video using auto-captions via yt-dlp.
+ * Fallback: fetch YouTube captions via HTTP (no yt-dlp needed).
+ * Scrapes the video page for caption track URLs.
+ */
+async function fetchYouTubeCaptionsHTTP(videoId: string): Promise<string | null> {
+  try {
+    // Fetch the YouTube video page to extract caption track info
+    const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+    });
+    if (!pageRes.ok) return null;
+    const html = await pageRes.text();
+
+    // Extract captions JSON from the page source
+    const captionMatch = html.match(/"captions":\s*(\{[^\n]*"captionTracks":\s*\[[^\n]*\][^\n]*\})/);
+    if (!captionMatch) {
+      console.log(`[captions-http] No caption tracks found in page for ${videoId}`);
+      return null;
+    }
+
+    // Find the baseUrl for English auto-generated captions
+    const trackMatch = captionMatch[1].match(/"baseUrl":\s*"(https:[^"]*lang=en[^"]*)"/);
+    if (!trackMatch) {
+      console.log(`[captions-http] No English caption track for ${videoId}`);
+      return null;
+    }
+
+    // Unescape the URL and fetch as srv3 (XML with timestamps)
+    const captionUrl = trackMatch[1].replace(/\\u0026/g, "&") + "&fmt=vtt";
+    console.log(`[captions-http] Fetching captions from YouTube for ${videoId}`);
+    const captionRes = await fetch(captionUrl);
+    if (!captionRes.ok) return null;
+    const vtt = await captionRes.text();
+
+    // Parse VTT → plain text (same logic as yt-dlp path)
+    const lines = vtt.split("\n");
+    let transcript = "";
+    let lastText = "";
+    let lastTimestampSecs = -60;
+    let currentTimestamp = "";
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed === "WEBVTT" || /^\d+$/.test(trimmed) || trimmed.startsWith("Kind:") || trimmed.startsWith("Language:")) continue;
+
+      const tsMatch = trimmed.match(/^(\d{2}):(\d{2}):(\d{2})\.\d+\s*-->/);
+      if (tsMatch) {
+        const h = parseInt(tsMatch[1]), m = parseInt(tsMatch[2]), s = parseInt(tsMatch[3]);
+        const totalSecs = h * 3600 + m * 60 + s;
+        if (totalSecs - lastTimestampSecs >= 60) {
+          const display = h > 0 ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
+          currentTimestamp = `[${display}] `;
+          lastTimestampSecs = totalSecs;
+        }
+        continue;
+      }
+
+      if (trimmed.includes("-->")) continue;
+
+      const clean = trimmed.replace(/<[^>]+>/g, "").trim();
+      if (clean && clean !== lastText) {
+        transcript += currentTimestamp + clean + "\n";
+        currentTimestamp = "";
+        lastText = clean;
+      }
+    }
+
+    return transcript.trim() || null;
+  } catch (err) {
+    console.error(`[captions-http] Error:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+/**
+ * Fetch transcript from YouTube video. Tries yt-dlp first, falls back to HTTP scraping.
  */
 export async function fetchTranscriptData(videoUrl: string): Promise<TranscriptData> {
   const videoId = extractVideoId(videoUrl);
   if (!videoId) throw new Error(`Cannot extract video ID from URL: ${videoUrl}`);
 
+  // Try yt-dlp first (most reliable for auto-generated captions)
   const captions = await fetchYouTubeCaptions(videoUrl);
   if (captions && captions.length > 500) {
     return {
       transcript: captions,
+      chapters: "",
+      showTitle: "",
+      source: "youtube_captions",
+    };
+  }
+
+  // Fallback: fetch captions via HTTP (no yt-dlp needed)
+  console.log(`[transcript] yt-dlp failed or unavailable, trying HTTP fallback for ${videoId}`);
+  const httpCaptions = await fetchYouTubeCaptionsHTTP(videoId);
+  if (httpCaptions && httpCaptions.length > 500) {
+    return {
+      transcript: httpCaptions,
       chapters: "",
       showTitle: "",
       source: "youtube_captions",
