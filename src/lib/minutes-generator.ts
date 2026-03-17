@@ -1,9 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
-import OpenAI from "openai";
 import { exec } from "child_process";
 import { promisify } from "util";
 const execAsync = promisify(exec);
-import { existsSync, unlinkSync, statSync, createReadStream } from "fs";
+import { existsSync, unlinkSync } from "fs";
 import path from "path";
 import os from "os";
 import type { DocketEntry } from "@/types";
@@ -19,7 +18,7 @@ function getClient(): Anthropic {
 
 // --- YouTube transcript fetching ---
 
-export type TranscriptSource = "youtube_captions" | "whisper";
+export type TranscriptSource = "youtube_captions";
 
 interface TranscriptData {
   transcript: string;
@@ -105,13 +104,12 @@ async function fetchYouTubeCaptions(videoUrl: string): Promise<string | null> {
 }
 
 /**
- * Fetch transcript from YouTube video. Tries captions first, falls back to Whisper.
+ * Fetch transcript from YouTube video using auto-captions via yt-dlp.
  */
 export async function fetchTranscriptData(videoUrl: string): Promise<TranscriptData> {
   const videoId = extractVideoId(videoUrl);
   if (!videoId) throw new Error(`Cannot extract video ID from URL: ${videoUrl}`);
 
-  // Try YouTube auto-captions first (free, fast)
   const captions = await fetchYouTubeCaptions(videoUrl);
   if (captions && captions.length > 500) {
     return {
@@ -122,113 +120,20 @@ export async function fetchTranscriptData(videoUrl: string): Promise<TranscriptD
     };
   }
 
-  // Fall back to Whisper transcription
-  return fetchWhisperTranscript(videoUrl);
-}
-
-/**
- * Download YouTube audio via yt-dlp and transcribe with OpenAI Whisper.
- */
-export async function fetchWhisperTranscript(videoUrl: string): Promise<TranscriptData> {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY is required for Whisper transcription. Add it to .env.local.");
-  }
-
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const videoId = extractVideoId(videoUrl);
-  if (!videoId) throw new Error(`Cannot extract video ID from URL: ${videoUrl}`);
-
-  const tmpDir = os.tmpdir();
-  const audioPath = path.join(tmpDir, `piscataway-meeting-${videoId}.mp3`);
-
-  try {
-    console.log(`Downloading audio from YouTube: ${videoUrl}...`);
-    // Use yt-dlp to download audio directly as mp3
-    await execAsync(
-      `yt-dlp -x --audio-format mp3 --audio-quality 6 --postprocessor-args "-ar 16000 -ac 1" ` +
-      `--output "${audioPath.replace('.mp3', '.%(ext)s')}" "${videoUrl}" 2>/dev/null`,
-      { timeout: 600000 }
-    );
-
-    // yt-dlp may output with different extension before conversion
-    if (!existsSync(audioPath)) {
-      // Try to find the output file
-      const { stdout } = await execAsync(`ls ${path.join(tmpDir, `piscataway-meeting-${videoId}`)}* 2>/dev/null`);
-      const found = stdout.trim().split("\n")[0];
-      if (found && existsSync(found)) {
-        // Convert to mp3 if needed
-        if (!found.endsWith(".mp3")) {
-          await execAsync(`ffmpeg -i "${found}" -ar 16000 -ac 1 -q:a 6 "${audioPath}" -y 2>/dev/null`, { timeout: 300000 });
-          try { unlinkSync(found); } catch {}
-        }
-      }
-    }
-
-    if (!existsSync(audioPath)) {
-      throw new Error("Failed to download audio from YouTube. Is yt-dlp installed?");
-    }
-
-    const stats = statSync(audioPath);
-    const sizeMB = stats.size / (1024 * 1024);
-    console.log(`Audio downloaded: ${sizeMB.toFixed(1)}MB`);
-
-    if (sizeMB > 25) {
-      throw new Error(
-        `Audio file is ${sizeMB.toFixed(1)}MB (Whisper API limit is 25MB). ` +
-        `This meeting may be too long for single-pass transcription.`
-      );
-    }
-
-    console.log("Sending to Whisper API...");
-    const transcription = await openai.audio.transcriptions.create({
-      model: "whisper-1",
-      file: createReadStream(audioPath),
-      response_format: "verbose_json",
-      language: "en",
-      prompt: "Piscataway Township Municipal Council meeting. Council members: Cahill, Dawkins, Lombardi, Saunders, Seker, Spencer, Waterman. Mayor Wahler.",
-    });
-
-    const result = transcription as unknown as {
-      text: string;
-      segments: Array<{ start: number; end: number; text: string }>;
-    };
-
-    let formatted = "";
-    if (result.segments) {
-      for (const segment of result.segments) {
-        const mins = Math.floor(segment.start / 60);
-        const secs = Math.floor(segment.start % 60);
-        formatted += `[${mins}:${secs.toString().padStart(2, "0")}] ${segment.text.trim()}\n`;
-      }
-    }
-
-    console.log(`Whisper transcription complete: ${(formatted || result.text).length} chars`);
-
-    return {
-      transcript: formatted || result.text || "",
-      chapters: "",
-      showTitle: "",
-      source: "whisper",
-    };
-  } finally {
-    if (existsSync(audioPath)) {
-      unlinkSync(audioPath);
-    }
-  }
+  throw new Error(
+    `No YouTube auto-captions available for video ${videoId}. ` +
+    `Captions may not have been generated yet — try again later.`
+  );
 }
 
 // --- Minutes generation ---
 
-function buildSystemPrompt(meetingType: "council" | "reorganization", transcriptSource: TranscriptSource = "youtube_captions"): string {
-  const transcriptNote = transcriptSource === "whisper"
-    ? `The transcript was produced by OpenAI Whisper with proper capitalization and timestamps per segment (e.g. [12:34]). Higher quality than default but may still misrecognize names.`
-    : `The transcript is from YouTube auto-generated captions. It may have misrecognitions, missing punctuation, and incorrect capitalization. You MUST carefully correct names using the known names below.`;
-
+function buildSystemPrompt(meetingType: "council" | "reorganization"): string {
   return `You are the Deputy Township Clerk producing official minutes for the Township of Piscataway, Middlesex County, New Jersey (Faulkner Act Mayor-Council form of government).
 
 You will be given a transcript, chapter markers, and agenda items. Produce minutes that match the EXACT style and format used by Piscataway Township. These minutes are LONG and DETAILED — typically 15-20+ pages when printed. Do NOT abbreviate or summarize excessively.
 
-TRANSCRIPT NOTE: ${transcriptNote}
+TRANSCRIPT NOTE: The transcript is from YouTube auto-generated captions. It may have misrecognitions, missing punctuation, and incorrect capitalization. You MUST carefully correct names using the known names below.
 
 KNOWN NAMES — use these EXACT spellings (the transcript WILL misspell them):
 - Mayor: Brian C. Wahler
@@ -525,11 +430,10 @@ export async function generateMinutes(
   meeting: { meeting_type: string; meeting_date: string; video_url: string },
   transcript: string,
   chapters: string,
-  agendaItems: DocketEntry[],
-  transcriptSource: TranscriptSource = "youtube_captions"
+  agendaItems: DocketEntry[]
 ): Promise<string> {
   const meetingType = meeting.meeting_type as "council" | "reorganization";
-  const systemPrompt = buildSystemPrompt(meetingType, transcriptSource);
+  const systemPrompt = buildSystemPrompt(meetingType);
   const userMessage = buildUserMessage(meeting, transcript, chapters, agendaItems);
 
   const stream = getClient().messages.stream({
@@ -598,8 +502,7 @@ export function maybeAutoGenerateMinutes(meetingId: number): void {
         },
         transcriptData.transcript,
         transcriptData.chapters,
-        agendaItems,
-        transcriptData.source
+        agendaItems
       );
 
       updateMeeting(meetingId, { minutes });

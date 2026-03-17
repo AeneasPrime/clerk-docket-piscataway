@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getMeeting, getAgendaItemsForMeeting, updateMeeting } from "@/lib/db";
-import { fetchTranscriptData, fetchWhisperTranscript, generateMinutes, analyzeOrdinanceOutcomes, type TranscriptSource } from "@/lib/minutes-generator";
+import { fetchTranscriptData, generateMinutes, analyzeOrdinanceOutcomes } from "@/lib/minutes-generator";
 
 export const dynamic = "force-dynamic";
 // Allow long-running minutes generation (up to 10 minutes)
@@ -29,16 +29,8 @@ export async function POST(
     // Get agenda items for this meeting
     const agendaItems = getAgendaItemsForMeeting(meeting.meeting_date);
 
-    // Determine transcript source: default to YouTube captions, allow whisper override
-    let useWhisper = false;
-    try {
-      const body = await request.json();
-      if (body.source === "whisper") useWhisper = true;
-    } catch { /* default to transcript API */ }
-
-    const transcriptData = useWhisper
-      ? await fetchWhisperTranscript(meeting.video_url)
-      : await fetchTranscriptData(meeting.video_url);
+    // Fetch transcript from YouTube auto-captions
+    const transcriptData = await fetchTranscriptData(meeting.video_url);
 
     if (!transcriptData.transcript?.trim()) {
       return NextResponse.json(
@@ -47,10 +39,6 @@ export async function POST(
       );
     }
 
-    const transcriptText: string = transcriptData.transcript;
-    const chapters: string = transcriptData.chapters;
-    const source: TranscriptSource = transcriptData.source;
-
     // Generate minutes via Claude
     const minutes = await generateMinutes(
       {
@@ -58,17 +46,16 @@ export async function POST(
         meeting_date: meeting.meeting_date,
         video_url: meeting.video_url,
       },
-      transcriptText,
-      chapters,
-      agendaItems,
-      source
+      transcriptData.transcript,
+      transcriptData.chapters,
+      agendaItems
     );
 
     // Save the generated minutes
     updateMeeting(meetingId, { minutes });
 
     // Analyze transcript for ordinance outcomes and update tracking
-    await analyzeOrdinanceOutcomes(meeting.meeting_type, meeting.meeting_date, transcriptText, agendaItems);
+    await analyzeOrdinanceOutcomes(meeting.meeting_type, meeting.meeting_date, transcriptData.transcript, agendaItems);
 
     const updated = getMeeting(meetingId);
     return NextResponse.json(updated);

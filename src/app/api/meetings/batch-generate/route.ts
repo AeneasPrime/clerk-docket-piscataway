@@ -65,8 +65,7 @@ export async function POST() {
           },
           transcriptData.transcript,
           transcriptData.chapters,
-          agendaItems,
-          transcriptData.source
+          agendaItems
         );
 
         // Save minutes
