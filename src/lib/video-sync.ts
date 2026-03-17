@@ -21,7 +21,8 @@ function parseDateFromTitle(title: string): string | null {
   const match = title.match(COUNCIL_MEETING_RE);
   if (!match) return null;
 
-  const dateStr = match[1].trim();
+  // Strip trailing junk like " mp4", " HD", file extensions, etc.
+  const dateStr = match[1].trim().replace(/\s*(mp4|avi|mkv|mov|hd|sd|720p|1080p)$/i, "").trim();
   const parsed = new Date(dateStr + " 12:00:00");
   if (isNaN(parsed.getTime())) return null;
 
