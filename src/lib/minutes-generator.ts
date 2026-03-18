@@ -54,9 +54,13 @@ async function fetchYouTubeCaptions(videoId: string): Promise<string | null> {
     }
 
     const playerData = await playerRes.json();
+    const playabilityStatus = playerData?.playabilityStatus?.status;
+    const playabilityReason = playerData?.playabilityStatus?.reason;
+    console.log(`[captions] Playability: ${playabilityStatus}${playabilityReason ? ` — ${playabilityReason}` : ""}`);
+
     const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
     if (!Array.isArray(tracks) || tracks.length === 0) {
-      console.log(`[captions] No caption tracks found for ${videoId}`);
+      console.log(`[captions] No caption tracks found for ${videoId} (playability: ${playabilityStatus})`);
       return null;
     }
 
@@ -76,62 +80,11 @@ async function fetchYouTubeCaptions(videoId: string): Promise<string | null> {
       return null;
     }
     const xml = await captionRes.text();
-    if (!xml || xml.length < 100) {
-      console.log(`[captions] Caption response too short (${xml.length} chars)`);
-      return null;
+    const result = parseCaptionXml(xml);
+    if (result) {
+      console.log(`[captions] Got ${result.length} chars of transcript for ${videoId}`);
     }
-
-    // Step 3: Parse XML → plain text with periodic timestamp markers
-    // Format: <p t="12028" d="3370">caption text</p> (milliseconds)
-    const segmentRegex = /<p t="(\d+)" d="\d+"[^>]*>([\s\S]*?)<\/p>/g;
-    let transcript = "";
-    let lastTimestampSecs = -60;
-    let segMatch;
-
-    while ((segMatch = segmentRegex.exec(xml)) !== null) {
-      const startMs = parseInt(segMatch[1], 10);
-      const startSecs = startMs / 1000;
-      // Extract text from <s> tags or fall back to raw content
-      let text = "";
-      const sTagRegex = /<s[^>]*>([^<]*)<\/s>/g;
-      let sMatch;
-      while ((sMatch = sTagRegex.exec(segMatch[2])) !== null) {
-        text += sMatch[1];
-      }
-      if (!text) {
-        text = segMatch[2].replace(/<[^>]+>/g, "");
-      }
-      // Decode HTML entities
-      text = text
-        .replace(/&amp;/g, "&")
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&#39;/g, "'")
-        .replace(/&quot;/g, '"')
-        .replace(/&apos;/g, "'")
-        .trim();
-
-      if (!text) continue;
-
-      // Add timestamp marker every ~60 seconds
-      if (startSecs - lastTimestampSecs >= 60) {
-        const totalSecs = Math.floor(startSecs);
-        const h = Math.floor(totalSecs / 3600);
-        const m = Math.floor((totalSecs % 3600) / 60);
-        const s = totalSecs % 60;
-        const display = h > 0
-          ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
-          : `${m}:${String(s).padStart(2, "0")}`;
-        transcript += `[${display}] `;
-        lastTimestampSecs = startSecs;
-      }
-
-      transcript += text + "\n";
-    }
-
-    const result = transcript.trim();
-    console.log(`[captions] Got ${result.length} chars of transcript for ${videoId}`);
-    return result || null;
+    return result;
   } catch (err) {
     console.error(`[captions] Error:`, err instanceof Error ? err.message : err);
     return null;
@@ -139,21 +92,168 @@ async function fetchYouTubeCaptions(videoId: string): Promise<string | null> {
 }
 
 /**
+ * Fallback: scrape the YouTube watch page for caption tracks.
+ * Based on youtube-transcript package approach.
+ */
+async function fetchYouTubeCaptionsViaScrape(videoId: string): Promise<string | null> {
+  try {
+    console.log(`[captions] Trying web page scrape fallback for ${videoId}`);
+    const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+      headers: {
+        "User-Agent": YT_WEB_UA,
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+    if (!pageRes.ok) {
+      console.log(`[captions] Page fetch returned ${pageRes.status}`);
+      return null;
+    }
+    const html = await pageRes.text();
+
+    if (html.includes('class="g-recaptcha"')) {
+      console.error(`[captions] YouTube is requiring CAPTCHA — too many requests from this IP`);
+      return null;
+    }
+
+    // Extract ytInitialPlayerResponse JSON from the page
+    const marker = "var ytInitialPlayerResponse = ";
+    const startIdx = html.indexOf(marker);
+    if (startIdx === -1) {
+      console.log(`[captions] Could not find ytInitialPlayerResponse in page`);
+      return null;
+    }
+
+    const jsonStart = startIdx + marker.length;
+    let braceCount = 0;
+    let endIdx = jsonStart;
+    for (let i = jsonStart; i < html.length; i++) {
+      if (html[i] === "{") braceCount++;
+      else if (html[i] === "}") {
+        braceCount--;
+        if (braceCount === 0) { endIdx = i + 1; break; }
+      }
+    }
+
+    const playerData = JSON.parse(html.slice(jsonStart, endIdx));
+    const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    if (!Array.isArray(tracks) || tracks.length === 0) {
+      console.log(`[captions] No caption tracks in scraped page data`);
+      return null;
+    }
+
+    // Find English track
+    const enTrack = tracks.find((t: { languageCode: string }) => t.languageCode === "en");
+    if (!enTrack?.baseUrl) {
+      console.log(`[captions] No English track in scraped data`);
+      return null;
+    }
+
+    // Verify the baseUrl is from youtube.com
+    try {
+      const url = new URL(enTrack.baseUrl);
+      if (!url.hostname.endsWith(".youtube.com")) {
+        console.log(`[captions] Unexpected caption host: ${url.hostname}`);
+        return null;
+      }
+    } catch { return null; }
+
+    // Fetch caption XML
+    const captionRes = await fetch(enTrack.baseUrl, {
+      headers: { "User-Agent": YT_WEB_UA },
+    });
+    if (!captionRes.ok) return null;
+    const xml = await captionRes.text();
+
+    return parseCaptionXml(xml);
+  } catch (err) {
+    console.error(`[captions] Scrape fallback error:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+/**
+ * Parse YouTube caption XML (srv3 / timedtext format) into timestamped text.
+ */
+function parseCaptionXml(xml: string): string | null {
+  if (!xml || xml.length < 100) return null;
+
+  // Try <p t="ms" d="ms"> format first (newer)
+  const pRegex = /<p t="(\d+)" d="\d+"[^>]*>([\s\S]*?)<\/p>/g;
+  let transcript = "";
+  let lastTimestampSecs = -60;
+  let match;
+
+  while ((match = pRegex.exec(xml)) !== null) {
+    const startSecs = parseInt(match[1], 10) / 1000;
+    let text = "";
+    const sTagRegex = /<s[^>]*>([^<]*)<\/s>/g;
+    let sMatch;
+    while ((sMatch = sTagRegex.exec(match[2])) !== null) text += sMatch[1];
+    if (!text) text = match[2].replace(/<[^>]+>/g, "");
+    text = decodeXmlEntities(text).trim();
+    if (!text) continue;
+
+    if (startSecs - lastTimestampSecs >= 60) {
+      transcript += formatTimestamp(startSecs);
+      lastTimestampSecs = startSecs;
+    }
+    transcript += text + "\n";
+  }
+
+  // Fallback: try <text start="sec" dur="sec"> format (older)
+  if (!transcript) {
+    const textRegex = /<text start="([\d.]+)"[^>]*>([\s\S]*?)<\/text>/g;
+    while ((match = textRegex.exec(xml)) !== null) {
+      const startSecs = parseFloat(match[1]);
+      const text = decodeXmlEntities(match[2].replace(/<[^>]+>/g, "")).trim();
+      if (!text) continue;
+
+      if (startSecs - lastTimestampSecs >= 60) {
+        transcript += formatTimestamp(startSecs);
+        lastTimestampSecs = startSecs;
+      }
+      transcript += text + "\n";
+    }
+  }
+
+  return transcript.trim() || null;
+}
+
+function decodeXmlEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+}
+
+function formatTimestamp(secs: number): string {
+  const totalSecs = Math.floor(secs);
+  const h = Math.floor(totalSecs / 3600);
+  const m = Math.floor((totalSecs % 3600) / 60);
+  const s = totalSecs % 60;
+  const display = h > 0
+    ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+    : `${m}:${String(s).padStart(2, "0")}`;
+  return `[${display}] `;
+}
+
+/**
  * Fetch transcript from YouTube video using auto-captions.
- * Uses YouTube's innertube API — pure HTTP, no external dependencies.
+ * Tries innertube API first, falls back to web page scraping.
  */
 export async function fetchTranscriptData(videoUrl: string): Promise<TranscriptData> {
   const videoId = extractVideoId(videoUrl);
   if (!videoId) throw new Error(`Cannot extract video ID from URL: ${videoUrl}`);
 
+  // Try innertube API first (works from most IPs)
   const captions = await fetchYouTubeCaptions(videoId);
   if (captions && captions.length > 500) {
-    return {
-      transcript: captions,
-      chapters: "",
-      showTitle: "",
-      source: "youtube_captions",
-    };
+    return { transcript: captions, chapters: "", showTitle: "", source: "youtube_captions" };
+  }
+
+  // Fallback: scrape the watch page (works when innertube is blocked)
+  const scraped = await fetchYouTubeCaptionsViaScrape(videoId);
+  if (scraped && scraped.length > 500) {
+    return { transcript: scraped, chapters: "", showTitle: "", source: "youtube_captions" };
   }
 
   throw new Error(
