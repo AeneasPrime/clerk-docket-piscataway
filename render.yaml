@@ -4,7 +4,7 @@ services:
     runtime: node
     plan: starter
     buildCommand: npm ci && npm run build && cp -r public .next/standalone/public && cp -r .next/static .next/standalone/.next/static
-    startCommand: pip install yt-dlp && export PATH="$HOME/.local/bin:$PATH" && node .next/standalone/server.js
+    startCommand: node .next/standalone/server.js
     envVars:
       - key: NODE_ENV
         value: production
