@@ -29,12 +29,29 @@ export async function POST(
     // Get agenda items for this meeting
     const agendaItems = getAgendaItemsForMeeting(meeting.meeting_date);
 
-    // Fetch transcript from YouTube auto-captions
-    const transcriptData = await fetchTranscriptData(meeting.video_url);
+    // Check if transcript was provided in request body (for when YouTube blocks cloud IPs)
+    let transcript = "";
+    let chapters = "";
+    try {
+      const body = await request.json();
+      if (body?.transcript) {
+        transcript = body.transcript;
+        chapters = body.chapters || "";
+      }
+    } catch {
+      // No JSON body — will fetch from YouTube
+    }
 
-    if (!transcriptData.transcript?.trim()) {
+    // If no transcript provided, fetch from YouTube auto-captions
+    if (!transcript) {
+      const transcriptData = await fetchTranscriptData(meeting.video_url);
+      transcript = transcriptData.transcript;
+      chapters = transcriptData.chapters;
+    }
+
+    if (!transcript?.trim()) {
       return NextResponse.json(
-        { error: "No transcript available for this recording" },
+        { error: `No YouTube auto-captions available for video. YouTube may be blocking requests from this server.` },
         { status: 400 }
       );
     }
@@ -46,8 +63,8 @@ export async function POST(
         meeting_date: meeting.meeting_date,
         video_url: meeting.video_url,
       },
-      transcriptData.transcript,
-      transcriptData.chapters,
+      transcript,
+      chapters,
       agendaItems
     );
 
@@ -55,7 +72,7 @@ export async function POST(
     updateMeeting(meetingId, { minutes });
 
     // Analyze transcript for ordinance outcomes and update tracking
-    await analyzeOrdinanceOutcomes(meeting.meeting_type, meeting.meeting_date, transcriptData.transcript, agendaItems);
+    await analyzeOrdinanceOutcomes(meeting.meeting_type, meeting.meeting_date, transcript, agendaItems);
 
     const updated = getMeeting(meetingId);
     return NextResponse.json(updated);
