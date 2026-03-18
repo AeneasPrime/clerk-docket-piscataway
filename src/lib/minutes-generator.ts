@@ -71,9 +71,9 @@ async function fetchYouTubeCaptions(videoId: string): Promise<string | null> {
       return null;
     }
 
-    // Step 2: Fetch the transcript XML
+    // Step 2: Fetch the transcript XML (must use same Android UA as innertube request)
     const captionRes = await fetch(enTrack.baseUrl, {
-      headers: { "User-Agent": YT_WEB_UA },
+      headers: { "User-Agent": YT_ANDROID_UA },
     });
     if (!captionRes.ok) {
       console.error(`[captions] Caption fetch returned ${captionRes.status}`);
