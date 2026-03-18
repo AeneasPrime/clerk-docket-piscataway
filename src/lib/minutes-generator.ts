@@ -114,11 +114,18 @@ async function fetchYouTubeCaptionsViaYtDlp(videoId: string): Promise<string | n
       console.log(`[captions] yt-dlp not found in PATH`);
       return null;
     }
-    console.log(`[captions] Using yt-dlp at: ${ytdlpBin}`);
+    // Find node binary for JS runtime (needed for YouTube JS challenges)
+    let nodePath = "";
+    try {
+      const { stdout } = await execAsync("which node", { timeout: 5000 });
+      nodePath = stdout.trim();
+    } catch {}
+    const jsRuntimeArg = nodePath ? `--js-runtimes node:${nodePath}` : "";
+    console.log(`[captions] Using yt-dlp at: ${ytdlpBin}${nodePath ? `, node at: ${nodePath}` : ""}`);
     await execAsync(
-      `"${ytdlpBin}" --write-auto-sub --sub-lang en --sub-format vtt --skip-download ` +
+      `"${ytdlpBin}" ${jsRuntimeArg} --write-auto-sub --sub-lang en --sub-format vtt --skip-download ` +
       `--output "${subtitleBase}" "https://www.youtube.com/watch?v=${videoId}"`,
-      { timeout: 60000 }
+      { timeout: 120000 }
     );
 
     if (!existsSync(vttPath)) {
