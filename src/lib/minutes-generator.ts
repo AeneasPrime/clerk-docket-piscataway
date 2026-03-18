@@ -1,6 +1,13 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { exec } from "child_process";
+import { promisify } from "util";
+import { existsSync, readFileSync, unlinkSync } from "fs";
+import path from "path";
+import os from "os";
 import type { DocketEntry } from "@/types";
 import { getMeeting, getAgendaItemsForMeeting, updateMeeting, getMeetingsNeedingMinutes, getOrdinanceTracking, upsertOrdinanceTracking, getNextCouncilMeetingAfter } from "./db";
+
+const execAsync = promisify(exec);
 
 let _anthropic: Anthropic | null = null;
 function getClient(): Anthropic {
@@ -33,7 +40,79 @@ const YT_ANDROID_UA = `com.google.android.youtube/${YT_CLIENT_VERSION} (Linux; U
 const YT_WEB_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36";
 
 /**
- * Fetch YouTube auto-captions via the innertube API (pure HTTP, no yt-dlp needed).
+ * Fetch YouTube captions via yt-dlp (works from cloud IPs where HTTP is blocked).
+ */
+async function fetchYouTubeCaptionsViaYtDlp(videoId: string): Promise<string | null> {
+  const tmpDir = os.tmpdir();
+  const subtitleBase = path.join(tmpDir, `piscataway-captions-${videoId}`);
+  const vttPath = `${subtitleBase}.en.vtt`;
+
+  try {
+    console.log(`[captions] Trying yt-dlp for video ${videoId}`);
+    await execAsync(
+      `yt-dlp --write-auto-sub --sub-lang en --sub-format vtt --skip-download ` +
+      `--output "${subtitleBase}" "https://www.youtube.com/watch?v=${videoId}"`,
+      { timeout: 60000 }
+    );
+
+    if (!existsSync(vttPath)) {
+      console.log(`[captions] yt-dlp produced no VTT file`);
+      return null;
+    }
+
+    const vtt = readFileSync(vttPath, "utf-8");
+    try { unlinkSync(vttPath); } catch {}
+
+    // Parse VTT → plain text with periodic timestamp markers
+    const lines = vtt.split("\n");
+    let transcript = "";
+    let lastText = "";
+    let lastTimestampSecs = -60;
+    let currentTimestamp = "";
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed === "WEBVTT" || /^\d+$/.test(trimmed) ||
+          trimmed.startsWith("Kind:") || trimmed.startsWith("Language:")) continue;
+
+      const tsMatch = trimmed.match(/^(\d{2}):(\d{2}):(\d{2})\.\d+\s*-->/);
+      if (tsMatch) {
+        const h = parseInt(tsMatch[1]), m = parseInt(tsMatch[2]), s = parseInt(tsMatch[3]);
+        const totalSecs = h * 3600 + m * 60 + s;
+        if (totalSecs - lastTimestampSecs >= 60) {
+          const display = h > 0
+            ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+            : `${m}:${String(s).padStart(2, "0")}`;
+          currentTimestamp = `[${display}] `;
+          lastTimestampSecs = totalSecs;
+        }
+        continue;
+      }
+
+      if (trimmed.includes("-->")) continue;
+
+      const clean = trimmed.replace(/<[^>]+>/g, "").trim();
+      if (clean && clean !== lastText) {
+        transcript += currentTimestamp + clean + "\n";
+        currentTimestamp = "";
+        lastText = clean;
+      }
+    }
+
+    const result = transcript.trim();
+    if (result) console.log(`[captions] yt-dlp got ${result.length} chars for ${videoId}`);
+    return result || null;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(`[captions] yt-dlp failed: ${msg.slice(0, 200)}`);
+    // Clean up temp file on error
+    try { if (existsSync(vttPath)) unlinkSync(vttPath); } catch {}
+    return null;
+  }
+}
+
+/**
+ * Fetch YouTube auto-captions via the innertube API (works from residential IPs).
  */
 async function fetchYouTubeCaptions(videoId: string): Promise<string | null> {
   try {
@@ -238,19 +317,25 @@ function formatTimestamp(secs: number): string {
 
 /**
  * Fetch transcript from YouTube video using auto-captions.
- * Tries innertube API first, falls back to web page scraping.
+ * Tries yt-dlp first (works from cloud IPs), then innertube API, then web scrape.
  */
 export async function fetchTranscriptData(videoUrl: string): Promise<TranscriptData> {
   const videoId = extractVideoId(videoUrl);
   if (!videoId) throw new Error(`Cannot extract video ID from URL: ${videoUrl}`);
 
-  // Try innertube API first (works from most IPs)
+  // Try yt-dlp first (works from cloud IPs where YouTube blocks HTTP requests)
+  const ytdlp = await fetchYouTubeCaptionsViaYtDlp(videoId);
+  if (ytdlp && ytdlp.length > 500) {
+    return { transcript: ytdlp, chapters: "", showTitle: "", source: "youtube_captions" };
+  }
+
+  // Fallback: innertube API (works from residential IPs)
   const captions = await fetchYouTubeCaptions(videoId);
   if (captions && captions.length > 500) {
     return { transcript: captions, chapters: "", showTitle: "", source: "youtube_captions" };
   }
 
-  // Fallback: scrape the watch page (works when innertube is blocked)
+  // Last resort: scrape the watch page
   const scraped = await fetchYouTubeCaptionsViaScrape(videoId);
   if (scraped && scraped.length > 500) {
     return { transcript: scraped, chapters: "", showTitle: "", source: "youtube_captions" };
@@ -258,7 +343,7 @@ export async function fetchTranscriptData(videoUrl: string): Promise<TranscriptD
 
   throw new Error(
     `No YouTube auto-captions available for video ${videoId}. ` +
-    `Check logs for [captions] errors.`
+    `YouTube may be blocking requests from this server. Check logs for [captions] errors.`
   );
 }
 
