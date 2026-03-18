@@ -799,7 +799,7 @@ export function maybeAutoGenerateMinutes(meetingId: number): void {
         agendaItems
       );
 
-      updateMeeting(meetingId, { minutes });
+      updateMeeting(meetingId, { minutes, status: "completed" });
       console.log(`[auto-minutes] Minutes generated for meeting ${meetingId}`);
 
       // Analyze transcript for ordinance outcomes and update tracking

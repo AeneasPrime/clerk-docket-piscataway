@@ -144,7 +144,7 @@ export async function syncVideosFromYouTube(): Promise<{
         continue;
       }
 
-      updateMeeting(meeting.id, { video_url: videoUrl });
+      updateMeeting(meeting.id, { video_url: videoUrl, status: "in_progress" });
       maybeAutoGenerateMinutes(meeting.id);
       matched++;
       console.log(`[video-sync] Linked ${video.title} → meeting ${meeting.id}`);

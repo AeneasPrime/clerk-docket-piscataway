@@ -68,8 +68,8 @@ export async function POST(
       agendaItems
     );
 
-    // Save the generated minutes
-    updateMeeting(meetingId, { minutes });
+    // Save the generated minutes and mark as completed
+    updateMeeting(meetingId, { minutes, status: "completed" });
 
     // Analyze transcript for ordinance outcomes and update tracking
     await analyzeOrdinanceOutcomes(meeting.meeting_type, meeting.meeting_date, transcript, agendaItems);
