@@ -40,6 +40,25 @@ const YT_ANDROID_UA = `com.google.android.youtube/${YT_CLIENT_VERSION} (Linux; U
 const YT_WEB_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36";
 
 /**
+ * Locate the yt-dlp binary — check PATH first, then common pip install locations.
+ */
+async function findYtDlp(): Promise<string | null> {
+  try {
+    const { stdout } = await execAsync("which yt-dlp", { timeout: 5000 });
+    if (stdout.trim()) return stdout.trim();
+  } catch {}
+  const candidates = [
+    path.join(os.homedir(), ".local", "bin", "yt-dlp"),
+    "/usr/local/bin/yt-dlp",
+    "/usr/bin/yt-dlp",
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
+/**
  * Fetch YouTube captions via yt-dlp (works from cloud IPs where HTTP is blocked).
  */
 async function fetchYouTubeCaptionsViaYtDlp(videoId: string): Promise<string | null> {
@@ -49,8 +68,15 @@ async function fetchYouTubeCaptionsViaYtDlp(videoId: string): Promise<string | n
 
   try {
     console.log(`[captions] Trying yt-dlp for video ${videoId}`);
+    // Try PATH first, then common pip install locations
+    const ytdlpBin = await findYtDlp();
+    if (!ytdlpBin) {
+      console.log(`[captions] yt-dlp not found in PATH`);
+      return null;
+    }
+    console.log(`[captions] Using yt-dlp at: ${ytdlpBin}`);
     await execAsync(
-      `yt-dlp --write-auto-sub --sub-lang en --sub-format vtt --skip-download ` +
+      `"${ytdlpBin}" --write-auto-sub --sub-lang en --sub-format vtt --skip-download ` +
       `--output "${subtitleBase}" "https://www.youtube.com/watch?v=${videoId}"`,
       { timeout: 60000 }
     );
