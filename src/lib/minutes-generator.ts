@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { exec } from "child_process";
 import { promisify } from "util";
-import { existsSync, readFileSync, unlinkSync, writeFileSync, chmodSync } from "fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync, chmodSync, statSync } from "fs";
 import path from "path";
 import os from "os";
 import type { DocketEntry } from "@/types";
@@ -39,16 +39,16 @@ const YT_CLIENT_VERSION = "20.10.38";
 const YT_ANDROID_UA = `com.google.android.youtube/${YT_CLIENT_VERSION} (Linux; U; Android 14)`;
 const YT_WEB_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36";
 
-const YTDLP_PERSISTENT_PATH = "/data/yt-dlp";
+const YTDLP_PATH = path.join(os.tmpdir(), "yt-dlp");
 const YTDLP_DOWNLOAD_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
 
 /**
- * Locate the yt-dlp binary — check persistent disk, PATH, then common locations.
- * If not found anywhere, downloads to persistent disk.
+ * Locate the yt-dlp binary — check tmp, PATH, then common locations.
+ * If not found anywhere, downloads to tmp.
  */
 async function findYtDlp(): Promise<string | null> {
-  // Check persistent disk first (survives deploys)
-  if (existsSync(YTDLP_PERSISTENT_PATH)) return YTDLP_PERSISTENT_PATH;
+  // Check tmp first (downloaded previously in this instance)
+  if (existsSync(YTDLP_PATH)) return YTDLP_PATH;
 
   // Check PATH
   try {
@@ -66,24 +66,33 @@ async function findYtDlp(): Promise<string | null> {
     if (existsSync(p)) return p;
   }
 
-  // Not found — download to persistent disk
-  if (existsSync("/data")) {
-    try {
-      console.log(`[captions] Downloading yt-dlp to ${YTDLP_PERSISTENT_PATH}...`);
-      const res = await fetch(YTDLP_DOWNLOAD_URL, { redirect: "follow" });
-      if (!res.ok || !res.body) {
-        console.log(`[captions] Failed to download yt-dlp: ${res.status}`);
-        return null;
-      }
-      const arrayBuf = await res.arrayBuffer();
-      writeFileSync(YTDLP_PERSISTENT_PATH, Buffer.from(arrayBuf));
-      chmodSync(YTDLP_PERSISTENT_PATH, 0o755);
-      console.log(`[captions] yt-dlp downloaded successfully`);
-      return YTDLP_PERSISTENT_PATH;
-    } catch (err) {
-      console.log(`[captions] Failed to download yt-dlp: ${err instanceof Error ? err.message : err}`);
-      return null;
+  // Not found — download to tmp via curl (more reliable than fetch for large binaries)
+  try {
+    console.log(`[captions] Downloading yt-dlp to ${YTDLP_PATH}...`);
+    await execAsync(
+      `curl -L -o "${YTDLP_PATH}" "${YTDLP_DOWNLOAD_URL}" && chmod +x "${YTDLP_PATH}"`,
+      { timeout: 60000 }
+    );
+    if (existsSync(YTDLP_PATH)) {
+      console.log(`[captions] yt-dlp downloaded (${statSync(YTDLP_PATH).size} bytes)`);
+      return YTDLP_PATH;
     }
+  } catch (err) {
+    console.log(`[captions] curl download failed: ${err instanceof Error ? err.message : err}`);
+  }
+
+  // Fallback: try Node fetch
+  try {
+    const res = await fetch(YTDLP_DOWNLOAD_URL, { redirect: "follow" });
+    if (res.ok) {
+      const buf = Buffer.from(await res.arrayBuffer());
+      writeFileSync(YTDLP_PATH, buf);
+      chmodSync(YTDLP_PATH, 0o755);
+      console.log(`[captions] yt-dlp downloaded via fetch (${buf.length} bytes)`);
+      return YTDLP_PATH;
+    }
+  } catch (err) {
+    console.log(`[captions] fetch download failed: ${err instanceof Error ? err.message : err}`);
   }
 
   return null;
