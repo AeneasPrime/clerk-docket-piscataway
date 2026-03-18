@@ -9,6 +9,26 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const results: Record<string, unknown> = {};
 
+  // Check PATH and home directory
+  results.PATH = process.env.PATH;
+  results.HOME = process.env.HOME;
+
+  // Check if pip exists
+  try {
+    const { stdout } = await execAsync("which pip pip3 2>&1 || echo 'no pip'", { timeout: 5000 });
+    results.pip = stdout.trim();
+  } catch (e) {
+    results.pip = "error: " + (e instanceof Error ? e.message : String(e));
+  }
+
+  // List ~/.local/bin contents
+  try {
+    const { stdout } = await execAsync("ls -la $HOME/.local/bin/ 2>&1 || echo 'dir not found'", { timeout: 5000 });
+    results.localBin = stdout.trim();
+  } catch (e) {
+    results.localBin = "error: " + (e instanceof Error ? e.message : String(e));
+  }
+
   // Check if yt-dlp exists
   try {
     const { stdout: which } = await execAsync("which yt-dlp 2>&1 || echo 'not found'");
@@ -17,12 +37,12 @@ export async function GET() {
     results.ytdlpPath = "error: " + (e instanceof Error ? e.message : String(e));
   }
 
-  // Check yt-dlp version
+  // Try running yt-dlp with full path
   try {
-    const { stdout } = await execAsync("yt-dlp --version 2>&1", { timeout: 10000 });
-    results.ytdlpVersion = stdout.trim();
+    const { stdout } = await execAsync("$HOME/.local/bin/yt-dlp --version 2>&1 || echo 'not at ~/.local/bin'", { timeout: 10000 });
+    results.ytdlpVersionLocal = stdout.trim();
   } catch (e) {
-    results.ytdlpVersionError = (e instanceof Error ? e.message : String(e)).slice(0, 500);
+    results.ytdlpVersionLocal = "error: " + (e instanceof Error ? e.message : String(e));
   }
 
   // Check Python
@@ -33,16 +53,20 @@ export async function GET() {
     results.python = "error: " + (e instanceof Error ? e.message : String(e));
   }
 
-  // Try yt-dlp caption fetch
+  // Try pip install yt-dlp right now and see what happens
   try {
-    const { stdout, stderr } = await execAsync(
-      'yt-dlp --write-auto-sub --sub-lang en --sub-format vtt --skip-download ' +
-      '--output "/tmp/debug-test" "https://www.youtube.com/watch?v=bOdTgtjXnJ8" 2>&1',
-      { timeout: 30000 }
-    );
-    results.ytdlpOutput = (stdout + stderr).slice(-500);
+    const { stdout } = await execAsync("pip install yt-dlp 2>&1", { timeout: 60000 });
+    results.pipInstall = stdout.trim().slice(-300);
   } catch (e) {
-    results.ytdlpError = (e instanceof Error ? e.message : String(e)).slice(0, 500);
+    results.pipInstall = "error: " + (e instanceof Error ? e.message : String(e)).slice(0, 500);
+  }
+
+  // Check again after install
+  try {
+    const { stdout } = await execAsync("$HOME/.local/bin/yt-dlp --version 2>&1 || which yt-dlp 2>&1 || echo 'still not found'", { timeout: 10000 });
+    results.ytdlpAfterInstall = stdout.trim();
+  } catch (e) {
+    results.ytdlpAfterInstall = "error: " + (e instanceof Error ? e.message : String(e));
   }
 
   return NextResponse.json(results);
