@@ -4,6 +4,7 @@ import { promisify } from "util";
 import { existsSync, readFileSync, unlinkSync, writeFileSync, chmodSync, statSync } from "fs";
 import path from "path";
 import os from "os";
+import { YoutubeTranscript } from "youtube-transcript";
 import type { DocketEntry } from "@/types";
 import { getMeeting, getAgendaItemsForMeeting, updateMeeting, getMeetingsNeedingMinutes, getOrdinanceTracking, upsertOrdinanceTracking, getNextCouncilMeetingAfter } from "./db";
 
@@ -40,7 +41,11 @@ const YT_ANDROID_UA = `com.google.android.youtube/${YT_CLIENT_VERSION} (Linux; U
 const YT_WEB_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36";
 
 const YTDLP_PATH = path.join(os.tmpdir(), "yt-dlp");
-const YTDLP_DOWNLOAD_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
+const YTDLP_DOWNLOAD_URL = process.platform === "linux"
+  ? "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"
+  : process.platform === "darwin"
+    ? "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
+    : "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
 
 /**
  * Locate the yt-dlp binary — check tmp, PATH, then common locations.
@@ -388,13 +393,52 @@ function formatTimestamp(secs: number): string {
   return `[${display}] `;
 }
 
+async function fetchYouTubeCaptionsViaPackage(videoId: string): Promise<string | null> {
+  try {
+    console.log(`[captions] Trying youtube-transcript package for ${videoId}`);
+    const items = await YoutubeTranscript.fetchTranscript(videoId, { lang: "en" });
+    if (!items || items.length === 0) {
+      console.log(`[captions] youtube-transcript returned no items`);
+      return null;
+    }
+
+    let transcript = "";
+    let lastTimestampSecs = -60;
+
+    for (const item of items) {
+      const startSecs = item.offset / 1000;
+      const text = item.text?.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#39;/g, "'").replace(/&quot;/g, '"').trim();
+      if (!text) continue;
+
+      if (startSecs - lastTimestampSecs >= 60) {
+        transcript += formatTimestamp(startSecs);
+        lastTimestampSecs = startSecs;
+      }
+      transcript += text + "\n";
+    }
+
+    const result = transcript.trim();
+    if (result) console.log(`[captions] youtube-transcript got ${result.length} chars for ${videoId}`);
+    return result || null;
+  } catch (err) {
+    console.log(`[captions] youtube-transcript failed: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
 /**
  * Fetch transcript from YouTube video using auto-captions.
- * Tries yt-dlp first (works from cloud IPs), then innertube API, then web scrape.
+ * Tries youtube-transcript package first, then yt-dlp, then innertube API, then web scrape.
  */
 export async function fetchTranscriptData(videoUrl: string): Promise<TranscriptData> {
   const videoId = extractVideoId(videoUrl);
   if (!videoId) throw new Error(`Cannot extract video ID from URL: ${videoUrl}`);
+
+  // Try youtube-transcript package first (handles session/cookies properly)
+  const pkg = await fetchYouTubeCaptionsViaPackage(videoId);
+  if (pkg && pkg.length > 500) {
+    return { transcript: pkg, chapters: "", showTitle: "", source: "youtube_captions" };
+  }
 
   // Try yt-dlp first (works from cloud IPs where YouTube blocks HTTP requests)
   const ytdlp = await fetchYouTubeCaptionsViaYtDlp(videoId);
